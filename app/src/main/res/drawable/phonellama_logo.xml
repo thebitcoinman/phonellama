@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PhoneLlama logo — stylized llama head silhouette with circuit detail
+  Designed for 24dp usage, tintable via fillColor="#FF000000" base
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+  <!-- Llama neck/body base -->
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M6,20 L6,13 C6,10.5 7.5,9 9,8.5 L9,7 C9,5.5 9.8,4.5 11,4 L11,3 C11,2.45 11.45,2 12,2 L13,2 C13.55,2 14,2.45 14,3 L14,4 C15.2,4.5 16,5.5 16,7 L16,8.5 C17.5,9 18,10.5 18,13 L18,20 C18,21.1 17.1,22 16,22 L8,22 C6.9,22 6,21.1 6,20 Z" />
+
+  <!-- Left ear -->
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M9,8 L9,5 C9,4.2 9.5,3.5 10,3.5 L10.5,3.5 L10.5,7.5 Z" />
+
+  <!-- Right ear -->
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M15,8 L15,5 C15,4.2 14.5,3.5 14,3.5 L13.5,3.5 L13.5,7.5 Z" />
+
+  <!-- Left eye -->
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M10,12 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0" />
+
+  <!-- Right eye -->
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M14,12 m-1,0 a1,1 0 1,0 2,0 a1,1 0 1,0 -2,0" />
+
+  <!-- Circuit dot accent (bottom) -->
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M10,17 L14,17 M12,16 L12,18"
+      android:strokeColor="#FF000000"
+      android:strokeWidth="1.5"
+      android:strokeLineCap="round" />
+
+</vector>
