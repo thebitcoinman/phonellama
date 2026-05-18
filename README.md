@@ -21,7 +21,7 @@ Google AI Edge Gallery demonstrates excellent on-device inference using the Lite
 
 ## Screenshots
 
-> _Add screenshots here_
+![PhoneLlama](Screenshot_20260514-173712.png)
 
 ---
 
