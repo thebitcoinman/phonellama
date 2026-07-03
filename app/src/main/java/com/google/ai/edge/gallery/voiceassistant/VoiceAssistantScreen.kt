@@ -539,6 +539,14 @@ private fun RambleSection(
         }
       )
     }
+    if (rambleState.recording) {
+      OutlinedButton(
+        onClick = { if (rambleState.paused) RambleManager.resume() else RambleManager.pause() },
+        modifier = Modifier.height(56.dp),
+      ) {
+        Text(if (rambleState.paused) "Resume" else "Pause")
+      }
+    }
     if (
       rambleState.recording ||
         rambleState.processing ||

@@ -133,6 +133,11 @@
             android:exported="false"
             android:foregroundServiceType="microphone|specialUse" />
 
+        <service
+            android:name=".voiceassistant.RambleService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- For Firebase Analytics. -->
         <receiver
             android:name="com.google.android.gms.measurement.AppMeasurementReceiver"

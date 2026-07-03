@@ -36,6 +36,7 @@ private const val SAMPLE_RATE = 16000
 
 data class RambleState(
   val recording: Boolean = false,
+  val paused: Boolean = false,
   val processing: Boolean = false,
   val mode: String = "challenge",
   val transcript: String = "",
@@ -80,6 +81,7 @@ private const val LIVE_CHUNK_WORDS = 120
 private class RambleSession(val id: String = UUID.randomUUID().toString()) {
   val stopRequested = AtomicBoolean(false)
   val abortRequested = AtomicBoolean(false)
+  val paused = AtomicBoolean(false)
   val liveAnalysisBusy = AtomicBoolean(false)
   val pendingLiveWords = StringBuilder()
 }
@@ -159,6 +161,7 @@ object RambleManager {
     updateState(null) {
       it.copy(
         recording = true,
+        paused = false,
         processing = false,
         transcript = "",
         segmentsSent = 0,
@@ -168,6 +171,9 @@ object RambleManager {
         status = "Listening — ramble away…",
       )
     }
+    // Foreground service keeps the mic alive through screen-off/backgrounding
+    // and shows live progress in the notification shade.
+    RambleService.start(context.applicationContext)
     recordThread =
       thread(name = "RambleRecord") {
         try {
@@ -184,6 +190,19 @@ object RambleManager {
 
   fun stop() {
     currentSession?.stopRequested?.set(true)
+  }
+
+  /** Pause the mic without ending the session — resume to keep rambling. */
+  fun pause() {
+    val session = currentSession ?: return
+    session.paused.set(true)
+    updateState(session) { it.copy(paused = true, status = "Paused") }
+  }
+
+  fun resume() {
+    val session = currentSession ?: return
+    session.paused.set(false)
+    updateState(session) { it.copy(paused = false, status = "Listening — ramble away…") }
   }
 
   /**
@@ -214,6 +233,7 @@ object RambleManager {
     _state.update {
       it.copy(
         recording = false,
+        paused = false,
         processing = false,
         transcript = "",
         segmentsSent = 0,
@@ -266,6 +286,9 @@ object RambleManager {
       recorder.startRecording()
       while (!session.stopRequested.get()) {
         val read = recorder.read(buffer, 0, buffer.size)
+        // While paused the mic stays open but audio is discarded: nothing is
+        // transcribed, uploaded, or written to the keep-audio file.
+        if (session.paused.get()) continue
         if (read > 0) {
           try {
             pcmOut?.write(buffer, 0, read)
@@ -286,7 +309,7 @@ object RambleManager {
           }
         }
         val elapsedSec = (System.currentTimeMillis() - startMs) / 1000
-        if (elapsedSec > 0 && elapsedSec % 15 == 0L) {
+        if (elapsedSec > 0 && elapsedSec % 15 == 0L && !session.paused.get()) {
           updateState(session) {
             it.copy(status = "Listening… ${elapsedSec / 60}m ${elapsedSec % 60}s")
           }
@@ -399,7 +422,7 @@ object RambleManager {
     if (transcript.isBlank()) {
       pcmFile?.delete()
       updateState(session) {
-        it.copy(recording = false, processing = false, status = "No speech captured")
+        it.copy(recording = false, paused = false, processing = false, status = "No speech captured")
       }
       return
     }
@@ -410,6 +433,7 @@ object RambleManager {
     updateState(session) {
       it.copy(
         recording = false,
+        paused = false,
         processing = true,
         processingProgress = 0f,
         status = "Analyzing $wordCount words (~${(estimatedSec + 30) / 60} min)…",
