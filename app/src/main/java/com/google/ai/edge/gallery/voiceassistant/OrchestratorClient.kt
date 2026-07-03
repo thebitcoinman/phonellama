@@ -85,6 +85,7 @@ object OrchestratorClient {
     mode: String,
     chunk: String,
     final: Boolean,
+    abort: Boolean = false,
   ): Result<String?> =
     withContext(Dispatchers.IO) {
       try {
@@ -99,7 +100,13 @@ object OrchestratorClient {
 
         val body =
           gson.toJson(
-            mapOf("session_id" to sessionId, "mode" to mode, "chunk" to chunk, "final" to final)
+            mapOf(
+              "session_id" to sessionId,
+              "mode" to mode,
+              "chunk" to chunk,
+              "final" to final,
+              "abort" to abort,
+            )
           )
         connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 

@@ -1,6 +1,7 @@
 """PhoneLlama Proxmox orchestrator — handles complex-tier requests from the phone."""
 
 import os
+from collections import deque
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -75,6 +76,9 @@ RAMBLE_MODES = {
 
 RAMBLE_MAX_WORDS = int(os.environ.get("RAMBLE_MAX_WORDS", "6000"))
 _ramble_sessions: dict[str, dict] = {}
+# Fire-and-forget segment uploads can arrive after their session was aborted;
+# remember recent aborts so a late chunk doesn't silently resurrect a session.
+_aborted_session_ids: deque = deque(maxlen=200)
 
 
 class RambleRequest(BaseModel):
@@ -82,10 +86,19 @@ class RambleRequest(BaseModel):
     mode: str = "challenge"
     chunk: str = ""
     final: bool = False
+    abort: bool = False
 
 
 @app.post("/v1/ramble")
 async def ramble(req: RambleRequest):
+    if req.abort:
+        _ramble_sessions.pop(req.session_id, None)
+        _aborted_session_ids.append(req.session_id)
+        return {"ok": True, "aborted": True}
+
+    if req.session_id in _aborted_session_ids:
+        return {"ok": True, "ignored": True}
+
     session = _ramble_sessions.setdefault(req.session_id, {"chunks": []})
     if req.chunk.strip():
         session["chunks"].append(req.chunk.strip())

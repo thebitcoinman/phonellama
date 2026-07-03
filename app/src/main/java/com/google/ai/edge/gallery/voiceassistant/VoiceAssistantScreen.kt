@@ -25,11 +25,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -453,6 +457,17 @@ private fun RambleSection(
 ) {
   val context = LocalContext.current
   val rambleState by RambleManager.state.collectAsState()
+  val view = androidx.compose.ui.platform.LocalView.current
+
+  // A 10-20 minute ramble (and its multi-minute analysis) must not die to the
+  // lock screen.
+  val keepAwake = rambleState.recording || rambleState.processing
+  androidx.compose.runtime.DisposableEffect(keepAwake) {
+    view.keepScreenOn = keepAwake
+    onDispose { view.keepScreenOn = false }
+  }
+
+  LaunchedEffect(Unit) { RambleHistoryStore.refresh(context) }
 
   Text("Ramble mode", fontWeight = FontWeight.Medium)
   Text(
@@ -482,32 +497,61 @@ private fun RambleSection(
     )
   }
 
-  Button(
-    onClick = {
-      if (rambleState.recording) RambleManager.stop()
-      else
-        RambleManager.start(
-          context,
-          orchestratorUrl,
-          LocalOrchestrator(context, modelManagerViewModel),
-        )
-    },
-    enabled = enabled && !rambleState.processing,
-    modifier = Modifier.fillMaxWidth().height(56.dp),
-    colors =
-      ButtonDefaults.buttonColors(
-        containerColor =
-          if (rambleState.recording) MaterialTheme.colorScheme.error
-          else MaterialTheme.colorScheme.primary
-      ),
-  ) {
-    Text(
-      when {
-        rambleState.recording -> "Stop & analyze"
-        rambleState.processing -> "Analyzing…"
-        else -> "Start rambling"
+  val keepEnabled = !rambleState.recording && !rambleState.processing
+  Text(
+    "Keep after each session (app-private storage):",
+    style = MaterialTheme.typography.bodySmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+  )
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    KeepCheckbox("Audio", rambleState.keepAudio, keepEnabled) { RambleManager.setKeepAudio(it) }
+    KeepCheckbox("Transcript", rambleState.keepTranscript, keepEnabled) {
+      RambleManager.setKeepTranscript(it)
+    }
+    KeepCheckbox("Answer", rambleState.keepAnswer, keepEnabled) { RambleManager.setKeepAnswer(it) }
+  }
+
+  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Button(
+      onClick = {
+        if (rambleState.recording) RambleManager.stop()
+        else
+          RambleManager.start(
+            context,
+            orchestratorUrl,
+            LocalOrchestrator(context, modelManagerViewModel),
+          )
+      },
+      enabled = enabled && !rambleState.processing,
+      modifier = Modifier.weight(1f).height(56.dp),
+      colors =
+        ButtonDefaults.buttonColors(
+          containerColor =
+            if (rambleState.recording) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.primary
+        ),
+    ) {
+      Text(
+        when {
+          rambleState.recording -> "Stop & analyze"
+          rambleState.processing -> "Analyzing…"
+          else -> "Start rambling"
+        }
+      )
+    }
+    if (
+      rambleState.recording ||
+        rambleState.processing ||
+        rambleState.transcript.isNotEmpty() ||
+        rambleState.result.isNotEmpty()
+    ) {
+      OutlinedButton(
+        onClick = { RambleManager.abort(context, orchestratorUrl) },
+        modifier = Modifier.height(56.dp),
+      ) {
+        Text(if (rambleState.recording || rambleState.processing) "Abort" else "Reset")
       }
-    )
+    }
   }
 
   if (rambleState.processing) {
@@ -568,6 +612,154 @@ private fun RambleSection(
       }
     }
   }
+
+  RambleHistoryTable()
+}
+
+@Composable
+private fun KeepCheckbox(
+  label: String,
+  checked: Boolean,
+  enabled: Boolean,
+  onChange: (Boolean) -> Unit,
+) {
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled)
+    Text(label, style = MaterialTheme.typography.bodySmall)
+  }
+}
+
+@Composable
+private fun RambleHistoryTable() {
+  val context = LocalContext.current
+  val entries by RambleHistoryStore.entries.collectAsState()
+  var viewing by remember { mutableStateOf<RambleEntry?>(null) }
+  val dateFormat = remember { java.text.SimpleDateFormat("MMM d HH:mm", java.util.Locale.US) }
+
+  if (entries.isEmpty()) return
+
+  Text("Saved sessions", fontWeight = FontWeight.Medium)
+  Card(modifier = Modifier.fillMaxWidth()) {
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("When", Modifier.weight(1.2f), style = MaterialTheme.typography.labelSmall)
+        Text("Mode", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+        Text("Words", Modifier.weight(0.7f), style = MaterialTheme.typography.labelSmall)
+        Text("Kept", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+        Spacer(Modifier.weight(1.1f))
+      }
+      HorizontalDivider(Modifier.padding(vertical = 4.dp))
+      entries.forEach { entry ->
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+          Text(
+            dateFormat.format(java.util.Date(entry.timestampMs)),
+            Modifier.weight(1.2f),
+            style = MaterialTheme.typography.bodySmall,
+          )
+          Text(entry.mode, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+          Text("${entry.words}", Modifier.weight(0.7f), style = MaterialTheme.typography.bodySmall)
+          Text(
+            listOfNotNull(
+                "A".takeIf { entry.hasAudio },
+                "T".takeIf { entry.transcript != null },
+                "R".takeIf { entry.answer != null },
+              )
+              .joinToString("·"),
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+          )
+          Row(Modifier.weight(1.1f), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { viewing = entry }) { Text("View") }
+            TextButton(onClick = { RambleHistoryStore.delete(context, entry.id) }) {
+              Text("Del", color = MaterialTheme.colorScheme.error)
+            }
+          }
+        }
+      }
+      Text(
+        "A=audio, T=transcript, R=answer",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+
+  viewing?.let { entry ->
+    RambleEntryDialog(entry = entry, onDismiss = { viewing = null })
+  }
+}
+
+@Composable
+private fun RambleEntryDialog(entry: RambleEntry, onDismiss: () -> Unit) {
+  val context = LocalContext.current
+  var player by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+  var playing by remember { mutableStateOf(false) }
+  val dateFormat = remember { java.text.SimpleDateFormat("MMM d, HH:mm", java.util.Locale.US) }
+
+  androidx.compose.runtime.DisposableEffect(Unit) {
+    onDispose {
+      player?.release()
+      player = null
+    }
+  }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    title = {
+      Text("${entry.mode} · ${dateFormat.format(java.util.Date(entry.timestampMs))}")
+    },
+    text = {
+      Column(
+        Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        if (entry.hasAudio) {
+          OutlinedButton(
+            onClick = {
+              if (playing) {
+                player?.release()
+                player = null
+                playing = false
+              } else {
+                val file = RambleHistoryStore.audioFile(context, entry.id) ?: return@OutlinedButton
+                val mp = android.media.MediaPlayer()
+                try {
+                  mp.setDataSource(file.absolutePath)
+                  mp.prepare()
+                  mp.setOnCompletionListener {
+                    playing = false
+                    it.release()
+                    player = null
+                  }
+                  mp.start()
+                  player = mp
+                  playing = true
+                } catch (e: Exception) {
+                  android.util.Log.e("RambleHistory", "Audio playback failed", e)
+                  mp.release()
+                  player = null
+                  playing = false
+                }
+              }
+            }
+          ) {
+            Text(
+              if (playing) "Stop audio" else "Play audio (${entry.audioSeconds / 60}m ${entry.audioSeconds % 60}s)"
+            )
+          }
+        }
+        if (entry.transcript != null) {
+          Text("Transcript (${entry.words} words)", fontWeight = FontWeight.Medium)
+          Text(entry.transcript, style = MaterialTheme.typography.bodySmall)
+        }
+        if (entry.answer != null) {
+          Text("Analysis", fontWeight = FontWeight.Medium)
+          Text(entry.answer, style = MaterialTheme.typography.bodySmall)
+        }
+      }
+    },
+  )
 }
 
 @Composable

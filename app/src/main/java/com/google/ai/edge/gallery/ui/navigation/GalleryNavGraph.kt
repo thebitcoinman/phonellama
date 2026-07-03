@@ -189,7 +189,8 @@ fun GalleryNavHost(
 
   NavHost(
     navController = navController,
-    startDestination = ROUTE_HOMESCREEN,
+    // Launch straight into the Voice Assistant — it's the app's primary surface.
+    startDestination = ROUTE_VOICE_ASSISTANT,
     enterTransition = { EnterTransition.None },
     exitTransition = { ExitTransition.None },
   ) {
@@ -370,7 +371,11 @@ fun GalleryNavHost(
             title = "Voice Assistant",
             leftAction = AppBarAction(AppBarActionType.NAVIGATE_UP) {
               enableHomeScreenAnimation = false
-              navController.navigateUp()
+              // As the start destination there is nothing to pop — the up
+              // arrow leads to the home screen (models, settings, etc.).
+              if (!navController.navigateUp()) {
+                navController.navigate(ROUTE_HOMESCREEN)
+              }
             },
           )
         }

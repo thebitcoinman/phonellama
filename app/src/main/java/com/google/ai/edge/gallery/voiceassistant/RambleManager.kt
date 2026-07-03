@@ -16,6 +16,8 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -23,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.vosk.Model
@@ -43,6 +46,9 @@ data class RambleState(
   val liveNotes: List<String> = emptyList(),
   /** 0..1 estimated fraction of the final analysis completed; capped at 0.95 until done. */
   val processingProgress: Float = 0f,
+  val keepAudio: Boolean = false,
+  val keepTranscript: Boolean = true,
+  val keepAnswer: Boolean = true,
 )
 
 // On-device live-note prompts: short observations on the newest fragment while
@@ -68,10 +74,21 @@ private val LIVE_PROMPTS =
 private const val LIVE_CHUNK_WORDS = 120
 
 /**
+ * One recording session. Each session owns its control flags so that a stale
+ * thread or coroutine can never be revived by flag resets from a newer session.
+ */
+private class RambleSession(val id: String = UUID.randomUUID().toString()) {
+  val stopRequested = AtomicBoolean(false)
+  val abortRequested = AtomicBoolean(false)
+  val liveAnalysisBusy = AtomicBoolean(false)
+  val pendingLiveWords = StringBuilder()
+}
+
+/**
  * Long-form think-aloud mode: records continuously (no 60s cap), transcribes
  * offline with Vosk segment by segment, streams each segment to the
- * orchestrator, and on stop asks it to analyze the whole transcript against a
- * mode-specific system prompt (challenge / solve / summarize).
+ * orchestrator, optionally produces on-device live notes, and on stop asks the
+ * orchestrator to analyze the whole transcript against a mode-specific prompt.
  */
 object RambleManager {
 
@@ -80,64 +97,149 @@ object RambleManager {
   private val _state = MutableStateFlow(RambleState())
   val state: StateFlow<RambleState> = _state.asStateFlow()
 
-  private val stopRequested = AtomicBoolean(false)
-  private val liveAnalysisBusy = AtomicBoolean(false)
+  @Volatile private var currentSession: RambleSession? = null
   private var recordThread: Thread? = null
-  private var sessionId: String = ""
   private var localOrchestrator: LocalOrchestrator? = null
-  private val pendingLiveWords = StringBuilder()
+
+  /**
+   * Apply a state change owned by [session]; silently dropped if that session
+   * is no longer current (aborted or superseded). Pass null for global
+   * settings changes that are not session-scoped.
+   */
+  private inline fun updateState(
+    session: RambleSession?,
+    crossinline transform: (RambleState) -> RambleState,
+  ) {
+    _state.update { s ->
+      if (session != null && session !== currentSession) s else transform(s)
+    }
+  }
 
   fun setMode(mode: String) {
-    if (mode in modes) _state.value = _state.value.copy(mode = mode)
+    if (mode in modes) updateState(null) { it.copy(mode = mode) }
   }
 
   fun setLiveNotesEnabled(enabled: Boolean) {
-    _state.value = _state.value.copy(liveNotesEnabled = enabled)
+    updateState(null) { it.copy(liveNotesEnabled = enabled) }
+  }
+
+  fun setKeepAudio(keep: Boolean) {
+    updateState(null) { it.copy(keepAudio = keep) }
+  }
+
+  fun setKeepTranscript(keep: Boolean) {
+    updateState(null) { it.copy(keepTranscript = keep) }
+  }
+
+  fun setKeepAnswer(keep: Boolean) {
+    updateState(null) { it.copy(keepAnswer = keep) }
   }
 
   fun start(context: Context, orchestratorUrl: String, orchestrator: LocalOrchestrator? = null) {
     if (_state.value.recording || _state.value.processing) return
     if (!VoskTranscriber.isModelDownloaded(context)) {
-      _state.value = _state.value.copy(status = "Download the Vosk model first")
+      updateState(null) { it.copy(status = "Download the Vosk model first") }
       return
     }
-    sessionId = UUID.randomUUID().toString()
-    stopRequested.set(false)
-    liveAnalysisBusy.set(false)
+    // The previous thread always sees its own session's stop flag, so it exits
+    // promptly — but never run two recorders. Bail rather than block the UI.
+    recordThread?.let { prev ->
+      if (prev.isAlive) {
+        prev.join(1_000)
+        if (prev.isAlive) {
+          updateState(null) { it.copy(status = "Previous session still stopping — try again") }
+          return
+        }
+      }
+    }
+    sweepStaleTempFiles(context)
+    val session = RambleSession()
+    currentSession = session
     localOrchestrator = orchestrator
-    pendingLiveWords.setLength(0)
-    _state.value =
-      _state.value.copy(
+    updateState(null) {
+      it.copy(
         recording = true,
         processing = false,
         transcript = "",
         segmentsSent = 0,
         result = "",
         liveNotes = emptyList(),
+        processingProgress = 0f,
         status = "Listening — ramble away…",
       )
+    }
     recordThread =
       thread(name = "RambleRecord") {
         try {
-          runRecordingLoop(context, orchestratorUrl)
+          runRecordingLoop(context, orchestratorUrl, session)
         } catch (e: Exception) {
           Log.e(TAG, "Ramble loop failed", e)
-          _state.value =
-            _state.value.copy(
-              recording = false,
-              processing = false,
-              status = "Ramble failed: ${e.message}",
-            )
+          tempPcmFile(context, session.id).delete()
+          updateState(session) {
+            it.copy(recording = false, processing = false, status = "Ramble failed: ${e.message}")
+          }
         }
       }
   }
 
   fun stop() {
-    stopRequested.set(true)
+    currentSession?.stopRequested?.set(true)
+  }
+
+  /**
+   * Discard the session: stop recording without analysis, drop the server-side
+   * chunks, delete any temp audio, and reset the UI. In-flight work from the
+   * discarded session (segment uploads, live notes, a pending analysis) is
+   * silently ignored when it completes, because the session is no longer
+   * current.
+   */
+  fun abort(context: Context, orchestratorUrl: String) {
+    val session = currentSession
+    currentSession = null
+    if (session != null) {
+      session.abortRequested.set(true)
+      session.stopRequested.set(true)
+      VoiceAssistantManager.routeScope.launch {
+        OrchestratorClient.ramble(
+          baseUrl = orchestratorUrl,
+          sessionId = session.id,
+          mode = _state.value.mode,
+          chunk = "",
+          final = false,
+          abort = true,
+        )
+      }
+      tempPcmFile(context, session.id).delete()
+    }
+    _state.update {
+      it.copy(
+        recording = false,
+        processing = false,
+        transcript = "",
+        segmentsSent = 0,
+        result = "",
+        liveNotes = emptyList(),
+        processingProgress = 0f,
+        status = if (session != null) "Discarded" else "",
+      )
+    }
+  }
+
+  private fun tempPcmFile(context: Context, id: String): File =
+    File(context.cacheDir, "ramble_$id.pcm")
+
+  private fun sweepStaleTempFiles(context: Context) {
+    context.cacheDir
+      .listFiles { f -> f.name.startsWith("ramble_") && f.name.endsWith(".pcm") }
+      ?.forEach { it.delete() }
   }
 
   @SuppressLint("MissingPermission")
-  private fun runRecordingLoop(context: Context, orchestratorUrl: String) {
+  private fun runRecordingLoop(
+    context: Context,
+    orchestratorUrl: String,
+    session: RambleSession,
+  ) {
     val model = Model(VoskTranscriber.getModelDir(context).absolutePath)
     val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
     val minBuffer =
@@ -156,26 +258,45 @@ object RambleManager {
       )
     val buffer = ByteArray(4096)
     val startMs = System.currentTimeMillis()
+    val keepAudio = _state.value.keepAudio
+    val pcmFile = tempPcmFile(context, session.id)
+    var pcmOut: FileOutputStream? = if (keepAudio) FileOutputStream(pcmFile) else null
 
     try {
       recorder.startRecording()
-      while (!stopRequested.get()) {
+      while (!session.stopRequested.get()) {
         val read = recorder.read(buffer, 0, buffer.size)
-        if (read > 0 && recognizer.acceptWaveForm(buffer, read)) {
-          val text = extractText(recognizer.result)
-          if (text.isNotBlank()) {
-            appendSegment(text, orchestratorUrl)
+        if (read > 0) {
+          try {
+            pcmOut?.write(buffer, 0, read)
+          } catch (e: Exception) {
+            // Audio keeping failed (disk full?) — drop the tee, keep the session.
+            Log.w(TAG, "Audio tee failed; continuing without audio", e)
+            try {
+              pcmOut?.close()
+            } catch (_: Exception) {}
+            pcmOut = null
+            pcmFile.delete()
+          }
+          if (recognizer.acceptWaveForm(buffer, read)) {
+            val text = extractText(recognizer.result)
+            if (text.isNotBlank()) {
+              appendSegment(text, orchestratorUrl, session)
+            }
           }
         }
         val elapsedSec = (System.currentTimeMillis() - startMs) / 1000
         if (elapsedSec > 0 && elapsedSec % 15 == 0L) {
-          _state.value =
-            _state.value.copy(status = "Listening… ${elapsedSec / 60}m ${elapsedSec % 60}s")
+          updateState(session) {
+            it.copy(status = "Listening… ${elapsedSec / 60}m ${elapsedSec % 60}s")
+          }
         }
       }
-      val tail = extractText(recognizer.finalResult)
-      if (tail.isNotBlank()) {
-        appendSegment(tail, orchestratorUrl)
+      if (!session.abortRequested.get()) {
+        val tail = extractText(recognizer.finalResult)
+        if (tail.isNotBlank()) {
+          appendSegment(tail, orchestratorUrl, session)
+        }
       }
     } finally {
       try {
@@ -184,31 +305,39 @@ object RambleManager {
       recorder.release()
       recognizer.close()
       model.close()
+      try {
+        pcmOut?.close()
+      } catch (_: Exception) {}
     }
 
-    finishAndAnalyze(orchestratorUrl)
+    if (session.abortRequested.get() || session !== currentSession) {
+      pcmFile.delete()
+      return
+    }
+    finishAndAnalyze(context, orchestratorUrl, session, pcmFile.takeIf { pcmOut != null })
   }
 
-  private fun appendSegment(text: String, orchestratorUrl: String) {
-    val current = _state.value
-    _state.value =
-      current.copy(
-        transcript = (current.transcript + " " + text).trim(),
-        segmentsSent = current.segmentsSent + 1,
+  private fun appendSegment(text: String, orchestratorUrl: String, session: RambleSession) {
+    if (session !== currentSession) return
+    updateState(session) {
+      it.copy(
+        transcript = (it.transcript + " " + text).trim(),
+        segmentsSent = it.segmentsSent + 1,
       )
+    }
     // Fire-and-forget upload; the final request re-sends nothing — the server
     // accumulates — so a dropped segment only loses that segment's words.
     VoiceAssistantManager.routeScope.launch {
       OrchestratorClient.ramble(
           baseUrl = orchestratorUrl,
-          sessionId = sessionId,
+          sessionId = session.id,
           mode = _state.value.mode,
           chunk = text,
           final = false,
         )
         .onFailure { Log.w(TAG, "Segment upload failed: ${it.message}") }
     }
-    maybeRunLiveAnalysis(text)
+    maybeRunLiveAnalysis(text, session)
   }
 
   /**
@@ -217,22 +346,25 @@ object RambleManager {
    * model is still busy, words keep coalescing into the next pass — the feed
    * paces itself to the phone's inference speed.
    */
-  private fun maybeRunLiveAnalysis(newText: String) {
+  private fun maybeRunLiveAnalysis(newText: String, session: RambleSession) {
     val orchestrator = localOrchestrator ?: return
     if (!_state.value.liveNotesEnabled) return
-    synchronized(pendingLiveWords) {
-      if (pendingLiveWords.isNotEmpty()) pendingLiveWords.append(' ')
-      pendingLiveWords.append(newText)
+    if (session !== currentSession) return
+    synchronized(session.pendingLiveWords) {
+      if (session.pendingLiveWords.isNotEmpty()) session.pendingLiveWords.append(' ')
+      session.pendingLiveWords.append(newText)
     }
-    val pendingCount = synchronized(pendingLiveWords) { pendingLiveWords.split(" ").size }
+    val pendingCount =
+      synchronized(session.pendingLiveWords) { session.pendingLiveWords.split(" ").size }
     if (pendingCount < LIVE_CHUNK_WORDS) return
-    if (!liveAnalysisBusy.compareAndSet(false, true)) return
+    if (!session.liveAnalysisBusy.compareAndSet(false, true)) return
 
-    val chunk = synchronized(pendingLiveWords) {
-      val snapshot = pendingLiveWords.toString()
-      pendingLiveWords.setLength(0)
-      snapshot
-    }
+    val chunk =
+      synchronized(session.pendingLiveWords) {
+        val snapshot = session.pendingLiveWords.toString()
+        session.pendingLiveWords.setLength(0)
+        snapshot
+      }
     val system = LIVE_PROMPTS[_state.value.mode] ?: LIVE_PROMPTS.getValue("challenge")
     VoiceAssistantManager.routeScope.launch {
       try {
@@ -247,76 +379,117 @@ object RambleManager {
                 .take(3)
                 .map { it.take(300) }
             if (notes.isNotEmpty()) {
-              _state.value = _state.value.copy(liveNotes = _state.value.liveNotes + notes)
+              updateState(session) { it.copy(liveNotes = it.liveNotes + notes) }
             }
           }
           .onFailure { Log.w(TAG, "Live note failed: ${it.message}") }
       } finally {
-        liveAnalysisBusy.set(false)
+        session.liveAnalysisBusy.set(false)
       }
     }
   }
 
-  private fun finishAndAnalyze(orchestratorUrl: String) {
+  private fun finishAndAnalyze(
+    context: Context,
+    orchestratorUrl: String,
+    session: RambleSession,
+    pcmFile: File?,
+  ) {
     val transcript = _state.value.transcript
     if (transcript.isBlank()) {
-      _state.value =
-        _state.value.copy(recording = false, processing = false, status = "No speech captured")
+      pcmFile?.delete()
+      updateState(session) {
+        it.copy(recording = false, processing = false, status = "No speech captured")
+      }
       return
     }
     val wordCount = transcript.split(" ").size
     // Empirical on the CPU box: ~150s base (decode of a structured answer at
     // ~7 tok/s) plus prefill that scales with transcript length.
     val estimatedSec = 150 + (wordCount * 0.03).toInt()
-    _state.value =
-      _state.value.copy(
+    updateState(session) {
+      it.copy(
         recording = false,
         processing = true,
         processingProgress = 0f,
         status = "Analyzing $wordCount words (~${(estimatedSec + 30) / 60} min)…",
       )
+    }
     val ticker =
       VoiceAssistantManager.routeScope.launch {
         val analysisStart = System.currentTimeMillis()
-        while (true) {
+        while (session === currentSession && !session.abortRequested.get()) {
           delay(2_000L)
           val sec = (System.currentTimeMillis() - analysisStart) / 1000
           val fraction = (sec.toFloat() / estimatedSec).coerceAtMost(0.95f)
-          _state.value =
-            _state.value.copy(
-              processingProgress = fraction,
-              status = "Analyzing… ${sec}s of ~${estimatedSec}s",
-            )
+          updateState(session) {
+            it.copy(processingProgress = fraction, status = "Analyzing… ${sec}s of ~${estimatedSec}s")
+          }
         }
       }
     val result = runBlocking {
       OrchestratorClient.ramble(
         baseUrl = orchestratorUrl,
-        sessionId = sessionId,
+        sessionId = session.id,
         mode = _state.value.mode,
         chunk = "",
         final = true,
       )
     }
     ticker.cancel()
+    // The user may have aborted while the analysis was in flight — the
+    // session is no longer current, so the result is silently dropped.
+    if (session !== currentSession || session.abortRequested.get()) {
+      pcmFile?.delete()
+      return
+    }
     result.fold(
       onSuccess = { text ->
-        _state.value =
-          _state.value.copy(
-            processing = false,
-            processingProgress = 1f,
-            result = text.orEmpty(),
-            status = "Done",
-          )
+        val answer = text.orEmpty()
+        updateState(session) {
+          it.copy(processing = false, processingProgress = 1f, result = answer, status = "Done")
+        }
+        persistIfRequested(context, session, transcript, answer, pcmFile)
       },
       onFailure = { e ->
-        _state.value =
-          _state.value.copy(
+        updateState(session) {
+          it.copy(
             processing = false,
             processingProgress = 0f,
             status = "Analysis failed: ${e.message}",
           )
+        }
+        // Keep what we can even when the analysis fails — the recording and
+        // transcript are not worth losing to a server error.
+        persistIfRequested(context, session, transcript, answer = "", pcmFile = pcmFile)
       },
+    )
+  }
+
+  private fun persistIfRequested(
+    context: Context,
+    session: RambleSession,
+    transcript: String,
+    answer: String,
+    pcmFile: File?,
+  ) {
+    val s = _state.value
+    // Only save when something would actually be stored.
+    val storesAnything =
+      s.keepTranscript || (s.keepAnswer && answer.isNotBlank()) || (pcmFile?.exists() == true)
+    if (!storesAnything) {
+      pcmFile?.delete()
+      return
+    }
+    RambleHistoryStore.saveAsync(
+      context = context,
+      id = session.id,
+      mode = s.mode,
+      transcript = transcript,
+      answer = answer,
+      keepTranscript = s.keepTranscript,
+      keepAnswer = s.keepAnswer,
+      rawPcmFile = pcmFile,
     )
   }
 
