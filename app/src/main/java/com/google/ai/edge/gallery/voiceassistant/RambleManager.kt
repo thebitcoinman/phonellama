@@ -39,7 +39,30 @@ data class RambleState(
   val segmentsSent: Int = 0,
   val status: String = "",
   val result: String = "",
+  val liveNotesEnabled: Boolean = true,
+  val liveNotes: List<String> = emptyList(),
 )
+
+// On-device live-note prompts: short observations on the newest fragment while
+// the user is still talking. "PASS" means nothing noteworthy in this fragment.
+private val LIVE_PROMPTS =
+  mapOf(
+    "challenge" to
+      "You hear a fragment of someone thinking out loud (imperfect speech-to-text). " +
+        "If this fragment contains a logical fallacy, unstated assumption, or " +
+        "contradiction, state it in one short sentence starting with the type " +
+        "(e.g. \"Assumption: ...\"). If nothing is notable, reply exactly PASS.",
+    "solve" to
+      "You hear a fragment of someone describing a problem out loud (imperfect " +
+        "speech-to-text). If this fragment suggests a concrete solution direction or " +
+        "reveals a key constraint, state it in one short sentence. Otherwise reply exactly PASS.",
+    "summarize" to
+      "You hear a fragment of a spoken monologue (imperfect speech-to-text). " +
+        "State its key point in one short sentence. If it adds nothing new, reply exactly PASS.",
+  )
+
+// Words to accumulate before an on-device live-note pass.
+private const val LIVE_CHUNK_WORDS = 120
 
 /**
  * Long-form think-aloud mode: records continuously (no 60s cap), transcribes
@@ -55,14 +78,21 @@ object RambleManager {
   val state: StateFlow<RambleState> = _state.asStateFlow()
 
   private val stopRequested = AtomicBoolean(false)
+  private val liveAnalysisBusy = AtomicBoolean(false)
   private var recordThread: Thread? = null
   private var sessionId: String = ""
+  private var localOrchestrator: LocalOrchestrator? = null
+  private val pendingLiveWords = StringBuilder()
 
   fun setMode(mode: String) {
     if (mode in modes) _state.value = _state.value.copy(mode = mode)
   }
 
-  fun start(context: Context, orchestratorUrl: String) {
+  fun setLiveNotesEnabled(enabled: Boolean) {
+    _state.value = _state.value.copy(liveNotesEnabled = enabled)
+  }
+
+  fun start(context: Context, orchestratorUrl: String, orchestrator: LocalOrchestrator? = null) {
     if (_state.value.recording || _state.value.processing) return
     if (!VoskTranscriber.isModelDownloaded(context)) {
       _state.value = _state.value.copy(status = "Download the Vosk model first")
@@ -70,6 +100,9 @@ object RambleManager {
     }
     sessionId = UUID.randomUUID().toString()
     stopRequested.set(false)
+    liveAnalysisBusy.set(false)
+    localOrchestrator = orchestrator
+    pendingLiveWords.setLength(0)
     _state.value =
       _state.value.copy(
         recording = true,
@@ -77,6 +110,7 @@ object RambleManager {
         transcript = "",
         segmentsSent = 0,
         result = "",
+        liveNotes = emptyList(),
         status = "Listening — ramble away…",
       )
     recordThread =
@@ -170,6 +204,47 @@ object RambleManager {
           final = false,
         )
         .onFailure { Log.w(TAG, "Segment upload failed: ${it.message}") }
+    }
+    maybeRunLiveAnalysis(text)
+  }
+
+  /**
+   * On-device incremental notes: accumulate transcript words and, whenever a
+   * chunk's worth is ready and Gemma is free, analyze just that chunk. If the
+   * model is still busy, words keep coalescing into the next pass — the feed
+   * paces itself to the phone's inference speed.
+   */
+  private fun maybeRunLiveAnalysis(newText: String) {
+    val orchestrator = localOrchestrator ?: return
+    if (!_state.value.liveNotesEnabled) return
+    synchronized(pendingLiveWords) {
+      if (pendingLiveWords.isNotEmpty()) pendingLiveWords.append(' ')
+      pendingLiveWords.append(newText)
+    }
+    val pendingCount = synchronized(pendingLiveWords) { pendingLiveWords.split(" ").size }
+    if (pendingCount < LIVE_CHUNK_WORDS) return
+    if (!liveAnalysisBusy.compareAndSet(false, true)) return
+
+    val chunk = synchronized(pendingLiveWords) {
+      val snapshot = pendingLiveWords.toString()
+      pendingLiveWords.setLength(0)
+      snapshot
+    }
+    val system = LIVE_PROMPTS[_state.value.mode] ?: LIVE_PROMPTS.getValue("challenge")
+    VoiceAssistantManager.routeScope.launch {
+      try {
+        orchestrator
+          .analyzeChunk(prompt = chunk, systemInstruction = system)
+          .onSuccess { raw ->
+            val note = raw.trim().take(300)
+            if (note.isNotBlank() && !note.equals("PASS", ignoreCase = true)) {
+              _state.value = _state.value.copy(liveNotes = _state.value.liveNotes + note)
+            }
+          }
+          .onFailure { Log.w(TAG, "Live note failed: ${it.message}") }
+      } finally {
+        liveAnalysisBusy.set(false)
+      }
     }
   }
 

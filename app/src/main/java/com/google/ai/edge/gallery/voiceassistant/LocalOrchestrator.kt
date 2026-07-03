@@ -788,7 +788,57 @@ class LocalOrchestrator(
 
 
 
-  private suspend fun inferLocally(model: Model, prompt: String): Result<String> =
+  /**
+
+   * Run a one-shot on-device inference with a custom system instruction.
+
+   * Used by ramble mode's live notes; reuses whatever Gemma model is loaded.
+
+   */
+
+  suspend fun analyzeChunk(prompt: String, systemInstruction: String): Result<String> {
+
+    val model =
+
+      resolveModel(ComplexityTier.SIMPLE)
+
+        ?: return Result.failure(Exception("No on-device model available"))
+
+    if (!isDownloaded(model)) {
+
+      return Result.failure(Exception("Model '${model.name}' is not downloaded"))
+
+    }
+
+    val ensured = ensureModel(model) {}
+
+    if (ensured.isFailure) {
+
+      return Result.failure(ensured.exceptionOrNull() ?: Exception("Model load failed"))
+
+    }
+
+    return inferLocally(model, prompt, systemInstruction)
+
+  }
+
+
+
+  private suspend fun inferLocally(
+
+    model: Model,
+
+    prompt: String,
+
+    systemInstruction: String =
+
+      "You are a helpful voice assistant. Be concise. " +
+
+        "You do not have live internet data — if the user asks for current weather, news, " +
+
+        "or scores, say the app will route those queries automatically.",
+
+  ): Result<String> =
 
     suspendCancellableCoroutine { cont ->
 
@@ -802,17 +852,7 @@ class LocalOrchestrator(
 
         supportAudio = false,
 
-        systemInstruction =
-
-          Contents.of(
-
-            "You are a helpful voice assistant. Be concise. " +
-
-              "You do not have live internet data — if the user asks for current weather, news, " +
-
-              "or scores, say the app will route those queries automatically."
-
-          ),
+        systemInstruction = Contents.of(systemInstruction),
 
       )
 

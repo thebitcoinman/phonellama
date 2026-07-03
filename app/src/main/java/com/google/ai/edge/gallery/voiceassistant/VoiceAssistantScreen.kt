@@ -438,6 +438,7 @@ fun VoiceAssistantScreen(
     RambleSection(
       enabled = settings.enabled && micPermissionGranted && voskReady,
       orchestratorUrl = settings.orchestratorUrl,
+      modelManagerViewModel = modelManagerViewModel,
     )
 
     Spacer(Modifier.height(32.dp))
@@ -445,14 +446,19 @@ fun VoiceAssistantScreen(
 }
 
 @Composable
-private fun RambleSection(enabled: Boolean, orchestratorUrl: String) {
+private fun RambleSection(
+  enabled: Boolean,
+  orchestratorUrl: String,
+  modelManagerViewModel: ModelManagerViewModel,
+) {
   val context = LocalContext.current
   val rambleState by RambleManager.state.collectAsState()
 
   Text("Ramble mode", fontWeight = FontWeight.Medium)
   Text(
     "Think out loud for as long as you like (offline transcription, no time limit). " +
-      "When you stop, the transcript is analyzed on the Proxmox box.",
+      "Live notes appear as you talk (on-device Gemma); the full analysis runs on the " +
+      "Proxmox box when you stop.",
     style = MaterialTheme.typography.bodySmall,
     color = MaterialTheme.colorScheme.onSurfaceVariant,
   )
@@ -463,10 +469,28 @@ private fun RambleSection(enabled: Boolean, orchestratorUrl: String) {
     RambleModeChip("Summarize", "summarize", rambleState)
   }
 
+  Row(verticalAlignment = Alignment.CenterVertically) {
+    Switch(
+      checked = rambleState.liveNotesEnabled,
+      onCheckedChange = { RambleManager.setLiveNotesEnabled(it) },
+      enabled = !rambleState.recording && !rambleState.processing,
+    )
+    Text(
+      "Live on-device notes while talking",
+      style = MaterialTheme.typography.bodySmall,
+      modifier = Modifier.padding(start = 8.dp),
+    )
+  }
+
   Button(
     onClick = {
       if (rambleState.recording) RambleManager.stop()
-      else RambleManager.start(context, orchestratorUrl)
+      else
+        RambleManager.start(
+          context,
+          orchestratorUrl,
+          LocalOrchestrator(context, modelManagerViewModel),
+        )
     },
     enabled = enabled && !rambleState.processing,
     modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -492,6 +516,21 @@ private fun RambleSection(enabled: Boolean, orchestratorUrl: String) {
       style = MaterialTheme.typography.bodySmall,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+  }
+
+  if (rambleState.liveNotes.isNotEmpty()) {
+    Card(
+      modifier = Modifier.fillMaxWidth(),
+      colors =
+        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+      Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Live notes", fontWeight = FontWeight.Medium)
+        rambleState.liveNotes.takeLast(6).forEach { note ->
+          Text("• $note", style = MaterialTheme.typography.bodySmall)
+        }
+      }
+    }
   }
 
   if (rambleState.transcript.isNotEmpty() && (rambleState.recording || rambleState.processing)) {
