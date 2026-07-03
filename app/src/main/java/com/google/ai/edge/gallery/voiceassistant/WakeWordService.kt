@@ -45,9 +45,11 @@ class WakeWordService : Service() {
     when (intent?.action) {
       ACTION_START -> {
         val customPhrase = intent.getStringExtra(EXTRA_WAKE_PHRASE)?.trim().orEmpty()
+        // A custom phrase replaces the defaults — every extra active phrase
+        // widens the false-trigger surface against ambient speech.
         wakePhrases =
           if (customPhrase.isNotEmpty()) {
-            listOf(customPhrase) + VoskWakeWordDetector.defaultPhrases
+            listOf(customPhrase)
           } else {
             VoskWakeWordDetector.defaultPhrases
           }

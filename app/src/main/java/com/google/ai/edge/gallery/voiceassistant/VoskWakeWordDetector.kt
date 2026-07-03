@@ -41,7 +41,10 @@ object VoskWakeWordDetector {
       return false
     }
     val activePhrases = phrases.filter { it.isNotBlank() }.ifEmpty { defaultPhrases }
-    val grammar = activePhrases.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
+    // "[unk]" gives the decoder an escape hatch: without it, ANY speech (TV,
+    // conversation) is force-matched onto the closest wake phrase.
+    val grammar =
+      (activePhrases.map { "\"$it\"" } + "\"[unk]\"").joinToString(prefix = "[", postfix = "]")
 
     var model: Model? = null
     var recognizer: Recognizer? = null
@@ -68,7 +71,9 @@ object VoskWakeWordDetector {
 
         if (recognizer.acceptWaveForm(buffer, read)) {
           val text = extractText(recognizer.result)
-          if (text.isNotBlank()) {
+          // Must actually match a phrase — the grammar also emits [unk] for
+          // arbitrary speech, and force-matched garbage must not wake us.
+          if (text.isNotBlank() && matchesPhrase(text, activePhrases)) {
             Log.d(TAG, "Wake phrase detected (final): $text")
             return true
           }
