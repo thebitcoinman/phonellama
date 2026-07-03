@@ -48,6 +48,16 @@ curl -X POST :8081/v1/ramble -d '{"session_id":"abc12345","mode":"challenge","fi
 Sessions are in-memory; transcripts over `RAMBLE_MAX_WORDS` (default 6000)
 are truncated to the most recent words.
 
+## STT model hosting (`/models/`)
+
+The orchestrator serves STT model zips from `~/phonellama-orchestrator/models/`
+(volume-mounted read-only, not in git). The phone downloads
+`sherpa-zipformer-en-int8.zip` (~54 MB) from here for high-accuracy on-device
+streaming transcription. To regenerate: download
+`sherpa-onnx-streaming-zipformer-en-2023-06-26-mobile.tar.bz2` from the
+sherpa-onnx asr-models GitHub release, extract, and zip the int8
+encoder/joiner + decoder + tokens.txt (flat, no directories).
+
 ## OpenClaw wake-word routing
 
 Prompts starting with a wake word (`use claw`, `ask claw`, `hey claw` — override

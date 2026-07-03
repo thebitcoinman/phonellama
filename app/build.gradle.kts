@@ -75,6 +75,9 @@ kotlin {
 }
 
 dependencies {
+  // Streaming Zipformer STT (official prebuilt AAR from GitHub releases —
+  // sherpa-onnx publishes no Maven artifact).
+  implementation(files("libs/sherpa-onnx-1.13.3.aar"))
   implementation(libs.androidx.core.ktx)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.activity.compose)

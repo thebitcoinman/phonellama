@@ -40,6 +40,9 @@ services:
       OPENCLAW_TIMEOUT: "590"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      # STT model zips served at /models/ (not in git; see orchestrator README)
+      - ./models:/app/models:ro
     depends_on:
       - ollama
     restart: unless-stopped

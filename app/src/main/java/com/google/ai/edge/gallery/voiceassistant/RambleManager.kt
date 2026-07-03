@@ -50,7 +50,54 @@ data class RambleState(
   val keepAudio: Boolean = false,
   val keepTranscript: Boolean = true,
   val keepAnswer: Boolean = true,
+  /** Which STT engine the active/last session used ("Zipformer" or "Vosk"). */
+  val sttEngine: String = "",
 )
+
+/** Streaming STT engine abstraction: Vosk (small, basic) or Zipformer (large, accurate). */
+private interface SttEngine : AutoCloseable {
+  /** Feed PCM16LE audio; returns a finalized segment's text, or null. */
+  fun accept(buffer: ByteArray, len: Int): String?
+
+  /** Flush and return trailing text. */
+  fun finish(): String
+}
+
+private class VoskEngine(modelDir: String) : SttEngine {
+  private val model = Model(modelDir)
+  private val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
+
+  override fun accept(buffer: ByteArray, len: Int): String? {
+    if (recognizer.acceptWaveForm(buffer, len)) {
+      return extract(recognizer.result).ifBlank { null }
+    }
+    return null
+  }
+
+  override fun finish(): String = extract(recognizer.finalResult)
+
+  override fun close() {
+    recognizer.close()
+    model.close()
+  }
+
+  private fun extract(json: String): String =
+    Regex("\"text\"\\s*:\\s*\"([^\"]*)\"").find(json)?.groupValues?.get(1)?.trim().orEmpty()
+}
+
+private class ZipformerEngine(context: android.content.Context) : SttEngine {
+  private val recognizer = SherpaTranscriber.createRecognizer(context)
+  private val stream = SherpaStream(recognizer)
+
+  override fun accept(buffer: ByteArray, len: Int): String? = stream.accept(buffer, len)
+
+  override fun finish(): String = stream.finish()
+
+  override fun close() {
+    stream.close()
+    recognizer.release()
+  }
+}
 
 // On-device live-note prompts: short observations on the newest fragment while
 // the user is still talking. "PASS" means nothing noteworthy in this fragment.
@@ -260,8 +307,11 @@ object RambleManager {
     orchestratorUrl: String,
     session: RambleSession,
   ) {
-    val model = Model(VoskTranscriber.getModelDir(context).absolutePath)
-    val recognizer = Recognizer(model, SAMPLE_RATE.toFloat())
+    val useZipformer = SherpaTranscriber.isModelDownloaded(context)
+    updateState(session) { it.copy(sttEngine = if (useZipformer) "Zipformer" else "Vosk") }
+    val engine: SttEngine =
+      if (useZipformer) ZipformerEngine(context)
+      else VoskEngine(VoskTranscriber.getModelDir(context).absolutePath)
     val minBuffer =
       AudioRecord.getMinBufferSize(
         SAMPLE_RATE,
@@ -301,11 +351,9 @@ object RambleManager {
             pcmOut = null
             pcmFile.delete()
           }
-          if (recognizer.acceptWaveForm(buffer, read)) {
-            val text = extractText(recognizer.result)
-            if (text.isNotBlank()) {
-              appendSegment(text, orchestratorUrl, session)
-            }
+          val segment = engine.accept(buffer, read)
+          if (segment != null) {
+            appendSegment(segment, orchestratorUrl, session)
           }
         }
         val elapsedSec = (System.currentTimeMillis() - startMs) / 1000
@@ -316,7 +364,7 @@ object RambleManager {
         }
       }
       if (!session.abortRequested.get()) {
-        val tail = extractText(recognizer.finalResult)
+        val tail = engine.finish()
         if (tail.isNotBlank()) {
           appendSegment(tail, orchestratorUrl, session)
         }
@@ -326,8 +374,11 @@ object RambleManager {
         recorder.stop()
       } catch (_: Exception) {}
       recorder.release()
-      recognizer.close()
-      model.close()
+      try {
+        engine.close()
+      } catch (e: Exception) {
+        Log.w(TAG, "STT engine close failed", e)
+      }
       try {
         pcmOut?.close()
       } catch (_: Exception) {}
@@ -517,6 +568,4 @@ object RambleManager {
     )
   }
 
-  private fun extractText(json: String): String =
-    Regex("\"text\"\\s*:\\s*\"([^\"]*)\"").find(json)?.groupValues?.get(1)?.trim().orEmpty()
 }

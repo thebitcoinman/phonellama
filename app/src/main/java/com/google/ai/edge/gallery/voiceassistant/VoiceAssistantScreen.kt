@@ -478,6 +478,57 @@ private fun RambleSection(
     color = MaterialTheme.colorScheme.onSurfaceVariant,
   )
 
+  var zipformerReady by remember { mutableStateOf(SherpaTranscriber.isModelDownloaded(context)) }
+  var zipformerDownloading by remember { mutableStateOf(false) }
+  var zipformerProgress by remember { mutableStateOf<Float?>(null) }
+  var zipformerStatus by remember { mutableStateOf("") }
+  if (!zipformerReady) {
+    OutlinedButton(
+      onClick = {
+        zipformerDownloading = true
+        VoiceAssistantManager.routeScope.launch {
+          SherpaTranscriber.downloadModel(context.applicationContext, orchestratorUrl) { msg, frac ->
+              zipformerStatus = msg
+              zipformerProgress = frac
+            }
+            .fold(
+              onSuccess = {
+                zipformerReady = true
+                zipformerDownloading = false
+              },
+              onFailure = {
+                zipformerStatus = "Download failed: ${it.message}"
+                zipformerDownloading = false
+              },
+            )
+        }
+      },
+      enabled = !zipformerDownloading && !rambleState.recording && !rambleState.processing,
+      modifier = Modifier.fillMaxWidth(),
+    ) {
+      Text(if (zipformerDownloading) "Downloading…" else "Download high-accuracy STT (54 MB)")
+    }
+    if (zipformerDownloading) {
+      LinearProgressIndicator(
+        progress = { zipformerProgress ?: 0f },
+        modifier = Modifier.fillMaxWidth(),
+      )
+    }
+    if (zipformerStatus.isNotEmpty()) {
+      Text(
+        zipformerStatus,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  } else {
+    Text(
+      "STT engine: Zipformer (high accuracy) ✓",
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.primary,
+    )
+  }
+
   Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     RambleModeChip("Challenge me", "challenge", rambleState)
     RambleModeChip("Solve it", "solve", rambleState)

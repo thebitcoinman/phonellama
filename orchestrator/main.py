@@ -6,6 +6,7 @@ from collections import deque
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from router import pick_target
@@ -41,6 +42,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Model files the phone downloads from us (e.g. the sherpa-onnx STT model) —
+# repackaged as zips because Android can't unpack tar.bz2 natively.
+if os.path.isdir("models"):
+    app.mount("/models", StaticFiles(directory="models"), name="models")
 
 
 class RouteRequest(BaseModel):
