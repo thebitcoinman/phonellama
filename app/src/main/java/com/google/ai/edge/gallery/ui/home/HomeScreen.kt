@@ -59,6 +59,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ListAlt
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -164,6 +165,7 @@ fun HomeScreen(
   navigateToTaskScreen: (Task) -> Unit,
   onModelsClicked: () -> Unit,
   onServerClicked: () -> Unit,
+  onVoiceAssistantClicked: () -> Unit = {},
   enableAnimation: Boolean,
   modifier: Modifier = Modifier,
   gm4: Boolean = false,
@@ -357,8 +359,28 @@ fun HomeScreen(
                         )
                     ),
                 )
-                Spacer(modifier = Modifier.width(16.dp).weight(1f, fill = false))
-                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.width(16.dp))
+                SquareDrawerItem(
+                  label = "Voice Assistant",
+                  description = "Tiered on-device routing + Proxmox fallback",
+                  icon = Icons.Rounded.RecordVoiceOver,
+                  onClick = {
+                    scope.launch { drawerState.close() }
+                    scope.launch {
+                      delay(50)
+                      onVoiceAssistantClicked()
+                    }
+                  },
+                  modifier = Modifier.weight(1f),
+                  iconBrush =
+                    linearGradient(
+                      colors =
+                        listOf(
+                          MaterialTheme.customColors.taskBgGradientColors[3][0],
+                          MaterialTheme.customColors.taskBgGradientColors[3][1],
+                        )
+                    ),
+                )
               }
             }
           }

@@ -102,8 +102,7 @@ private val GATED_MODEL_IDS = setOf(
   "litert-community/functiongemma-270m-ft-tiny-garden",
   "litert-community/functiongemma-270m-ft-mobile-actions",
   "litert-community/gemma-3-270m-it",
-  "google/gemma-3n-E2B-it-litert-lm",
-  "google/gemma-3n-E4B-it-litert-lm",
+  // Gemma 3n E2B/E4B are required for Voice Assistant — not gated for PhoneLlama.
 )
 
 private const val TEST_MODEL_ALLOW_LIST = ""
@@ -285,18 +284,18 @@ constructor(
   }
 
   fun getAllDownloadedModels(): List<Model> {
-    return getAllModels().filter {
-      uiState.value.modelDownloadStatus[it.name]?.status == ModelDownloadStatusType.SUCCEEDED &&
-        it.isLlm
-    }
+    return getAllModels().filter { it.isLlm && isModelDownloadedOnDevice(it) }
   }
 
   /** Returns ALL downloaded models regardless of type — used for API model listing. */
   fun getAllDownloadedModelsForApi(): List<Model> {
-    return getAllModels().filter {
-      uiState.value.modelDownloadStatus[it.name]?.status == ModelDownloadStatusType.SUCCEEDED
-    }
+    return getAllModels().filter { isModelDownloadedOnDevice(it) }
   }
+
+  /** UI download map or on-disk scan — avoids false "nothing downloaded" after allowlist reload. */
+  private fun isModelDownloadedOnDevice(model: Model): Boolean =
+    uiState.value.modelDownloadStatus[model.name]?.status == ModelDownloadStatusType.SUCCEEDED ||
+      isModelDownloaded(model)
 
   fun processTasks() {
     val curTasks = getActiveCustomTasks().map { it.task }
@@ -1036,27 +1035,38 @@ constructor(
         }
 
         if (modelAllowlist == null) {
-          // Load from github.
-          var version = BuildConfig.VERSION_NAME.replace(".", "_")
-          val url = getAllowlistUrl(version)
-          Log.d(TAG, "Loading model allowlist from internet. Url: $url")
-          val data = getJsonResponse<ModelAllowlist>(url = url)
-          modelAllowlist = data?.jsonObj
+          // Load from github — try current version then known-good fallbacks.
+          val versionTags =
+            listOf(
+                BuildConfig.VERSION_NAME.substringBefore("-").replace(".", "_"),
+                "1_0_13",
+                "1_0_12",
+              )
+              .distinct()
+          for (version in versionTags) {
+            val url = getAllowlistUrl(version)
+            Log.d(TAG, "Loading model allowlist from internet. Url: $url")
+            val data = getJsonResponse<ModelAllowlist>(url = url)
+            if (data?.jsonObj != null) {
+              modelAllowlist = data.jsonObj
+              Log.d(TAG, "Done: loading model allowlist from internet (version tag $version)")
+              saveModelAllowlistToDisk(modelAllowlistContent = data.textContent ?: "{}")
+              break
+            }
+          }
 
           if (modelAllowlist == null) {
             Log.w(TAG, "Failed to load model allowlist from internet. Trying to load it from disk")
             modelAllowlist = readModelAllowlistFromDisk()
-          } else {
-            Log.d(TAG, "Done: loading model allowlist from internet")
-            saveModelAllowlistToDisk(modelAllowlistContent = data?.textContent ?: "{}")
           }
         }
 
         if (modelAllowlist == null) {
-          _uiState.update {
-            uiState.value.copy(loadingModelAllowlistError = "Failed to load model list")
-          }
-          return@launch
+          Log.w(
+            TAG,
+            "Allowlist unavailable offline — continuing with PhoneLlama catalog and any cached downloads",
+          )
+          modelAllowlist = ModelAllowlist(models = emptyList())
         }
 
         Log.d(TAG, "Allowlist: $modelAllowlist")
@@ -1205,7 +1215,13 @@ constructor(
         // Wait for AICore models statuses and update download indicators
         checkAICoreModelStatuses()
       } catch (e: Exception) {
-        e.printStackTrace()
+        Log.e(TAG, "loadModelAllowlist failed", e)
+        _uiState.update {
+          uiState.value.copy(
+            loadingModelAllowlist = false,
+            loadingModelAllowlistError = "Failed to load model list: ${e.message}",
+          )
+        }
       }
     }
   }

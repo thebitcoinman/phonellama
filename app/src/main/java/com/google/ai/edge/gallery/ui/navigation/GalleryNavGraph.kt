@@ -79,6 +79,7 @@ import com.google.ai.edge.gallery.data.ModelDownloadStatusType
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.isLegacyTasks
 import com.google.ai.edge.gallery.edgeserver.EdgeServerScreen
+import com.google.ai.edge.gallery.voiceassistant.VoiceAssistantScreen
 import com.google.ai.edge.gallery.firebaseAnalytics
 import com.google.ai.edge.gallery.ui.benchmark.BenchmarkScreen
 import com.google.ai.edge.gallery.ui.common.ErrorDialog
@@ -100,6 +101,7 @@ private const val ROUTE_MODEL = "route_model"
 private const val ROUTE_BENCHMARK = "benchmark"
 private const val ROUTE_MODEL_MANAGER = "model_manager"
 private const val ROUTE_EDGE_SERVER = "edge_server"
+private const val ROUTE_VOICE_ASSISTANT = "voice_assistant"
 private const val ENTER_ANIMATION_DURATION_MS = 500
 private val ENTER_ANIMATION_EASING = EaseOutExpo
 private const val ENTER_ANIMATION_DELAY_MS = 100
@@ -187,7 +189,8 @@ fun GalleryNavHost(
 
   NavHost(
     navController = navController,
-    startDestination = ROUTE_HOMESCREEN,
+    // Launch straight into the Voice Assistant — it's the app's primary surface.
+    startDestination = ROUTE_VOICE_ASSISTANT,
     enterTransition = { EnterTransition.None },
     exitTransition = { ExitTransition.None },
   ) {
@@ -204,6 +207,7 @@ fun GalleryNavHost(
         },
         onModelsClicked = { navController.navigate(ROUTE_MODEL_MANAGER) },
         onServerClicked = { navController.navigate(ROUTE_EDGE_SERVER) },
+        onVoiceAssistantClicked = { navController.navigate(ROUTE_VOICE_ASSISTANT) },
         gm4 = false,
       )
     }
@@ -352,6 +356,32 @@ fun GalleryNavHost(
       ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
           EdgeServerScreen(modelManagerViewModel = modelManagerViewModel)
+        }
+      }
+    }
+
+    composable(
+      route = ROUTE_VOICE_ASSISTANT,
+      enterTransition = { slideUpEnter() },
+      exitTransition = { slideDownExit() },
+    ) {
+      Scaffold(
+        topBar = {
+          GalleryTopAppBar(
+            title = "Voice Assistant",
+            leftAction = AppBarAction(AppBarActionType.NAVIGATE_UP) {
+              enableHomeScreenAnimation = false
+              // As the start destination there is nothing to pop — the up
+              // arrow leads to the home screen (models, settings, etc.).
+              if (!navController.navigateUp()) {
+                navController.navigate(ROUTE_HOMESCREEN)
+              }
+            },
+          )
+        }
+      ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+          VoiceAssistantScreen(modelManagerViewModel = modelManagerViewModel)
         }
       }
     }

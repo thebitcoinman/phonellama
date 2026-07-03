@@ -23,6 +23,7 @@ import com.google.ai.edge.gallery.proto.BenchmarkResults
 import com.google.ai.edge.gallery.proto.Cutout
 import com.google.ai.edge.gallery.proto.CutoutCollection
 import com.google.ai.edge.gallery.proto.ImportedModel
+import com.google.ai.edge.gallery.proto.OrchestratorMode
 import com.google.ai.edge.gallery.proto.Settings
 import com.google.ai.edge.gallery.proto.Skill
 import com.google.ai.edge.gallery.proto.Skills
@@ -109,6 +110,26 @@ interface DataStoreRepository {
 
   /** Returns whether a promo with the specified ID has been viewed. */
   fun hasViewedPromo(promoId: String): Boolean
+
+  fun saveVoiceAssistantEnabled(enabled: Boolean)
+
+  fun readVoiceAssistantEnabled(): Boolean
+
+  fun saveOrchestratorUrl(url: String)
+
+  fun readOrchestratorUrl(): String
+
+  fun saveOrchestratorMode(mode: OrchestratorMode)
+
+  fun readOrchestratorMode(): OrchestratorMode
+
+  fun saveWakeWordEnabled(enabled: Boolean)
+
+  fun readWakeWordEnabled(): Boolean
+
+  fun saveWakePhrase(phrase: String)
+
+  fun readWakePhrase(): String
 }
 
 /** Repository for managing data using Proto DataStore. */
@@ -433,4 +454,80 @@ class DefaultDataStoreRepository(
       settings.viewedPromoIdList.contains(promoId)
     }
   }
+
+  override fun saveVoiceAssistantEnabled(enabled: Boolean) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setVoiceAssistantEnabled(enabled).build()
+      }
+    }
+  }
+
+  override fun readVoiceAssistantEnabled(): Boolean {
+    return runBlocking { dataStore.data.first().voiceAssistantEnabled }
+  }
+
+  override fun saveOrchestratorUrl(url: String) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setOrchestratorUrl(url).build()
+      }
+    }
+  }
+
+  override fun readOrchestratorUrl(): String {
+    return runBlocking {
+      val url = dataStore.data.first().orchestratorUrl
+      if (url.isBlank()) DEFAULT_ORCHESTRATOR_URL else url
+    }
+  }
+
+  override fun saveOrchestratorMode(mode: OrchestratorMode) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setOrchestratorMode(mode).build()
+      }
+    }
+  }
+
+  override fun readOrchestratorMode(): OrchestratorMode {
+    return runBlocking {
+      val mode = dataStore.data.first().orchestratorMode
+      if (mode == OrchestratorMode.ORCHESTRATOR_MODE_UNSPECIFIED) {
+        OrchestratorMode.ORCHESTRATOR_MODE_PHONE_FIRST
+      } else {
+        mode
+      }
+    }
+  }
+
+  override fun saveWakeWordEnabled(enabled: Boolean) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setWakeWordEnabled(enabled).build()
+      }
+    }
+  }
+
+  override fun readWakeWordEnabled(): Boolean {
+    return runBlocking { dataStore.data.first().wakeWordEnabled }
+  }
+
+  override fun saveWakePhrase(phrase: String) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setWakePhrase(phrase.trim()).build()
+      }
+    }
+  }
+
+  override fun readWakePhrase(): String {
+    return runBlocking {
+      val phrase = dataStore.data.first().wakePhrase.trim()
+      if (phrase.isBlank()) DEFAULT_WAKE_PHRASE else phrase
+    }
+  }
 }
+
+const val DEFAULT_ORCHESTRATOR_URL = "http://100.69.62.49:8081"
+const val DEFAULT_WAKE_PHRASE = "hey morty"
