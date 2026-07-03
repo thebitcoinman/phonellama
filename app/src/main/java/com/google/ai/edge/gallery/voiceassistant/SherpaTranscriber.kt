@@ -149,7 +149,9 @@ object SherpaTranscriber {
               ),
             tokens = File(dir, TOKENS).absolutePath,
             numThreads = 2,
-            modelType = "zipformer",
+            // The en-2023-06-26 model is a zipformer2 architecture; the v1
+            // "zipformer" loader aborts on it ('attention_dims' missing).
+            modelType = "zipformer2",
           ),
         endpointConfig =
           EndpointConfig(
