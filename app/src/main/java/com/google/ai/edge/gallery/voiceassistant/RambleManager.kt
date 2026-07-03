@@ -41,6 +41,8 @@ data class RambleState(
   val result: String = "",
   val liveNotesEnabled: Boolean = true,
   val liveNotes: List<String> = emptyList(),
+  /** 0..1 estimated fraction of the final analysis completed; capped at 0.95 until done. */
+  val processingProgress: Float = 0f,
 )
 
 // On-device live-note prompts: short observations on the newest fragment while
@@ -49,16 +51,17 @@ private val LIVE_PROMPTS =
   mapOf(
     "challenge" to
       "You hear a fragment of someone thinking out loud (imperfect speech-to-text). " +
-        "If this fragment contains a logical fallacy, unstated assumption, or " +
-        "contradiction, state it in one short sentence starting with the type " +
-        "(e.g. \"Assumption: ...\"). If nothing is notable, reply exactly PASS.",
+        "List EVERY logical fallacy, unstated assumption, or contradiction in it — " +
+        "each on its own line, one short sentence, starting with the type " +
+        "(e.g. \"Assumption: ...\"). Up to 3 lines. If nothing is notable, reply exactly PASS.",
     "solve" to
       "You hear a fragment of someone describing a problem out loud (imperfect " +
-        "speech-to-text). If this fragment suggests a concrete solution direction or " +
-        "reveals a key constraint, state it in one short sentence. Otherwise reply exactly PASS.",
+        "speech-to-text). List each concrete solution direction or key constraint it " +
+        "suggests — one short sentence per line, up to 3 lines. If none, reply exactly PASS.",
     "summarize" to
       "You hear a fragment of a spoken monologue (imperfect speech-to-text). " +
-        "State its key point in one short sentence. If it adds nothing new, reply exactly PASS.",
+        "List its key points — one short sentence per line, up to 3 lines. " +
+        "If it adds nothing new, reply exactly PASS.",
   )
 
 // Words to accumulate before an on-device live-note pass.
@@ -236,9 +239,15 @@ object RambleManager {
         orchestrator
           .analyzeChunk(prompt = chunk, systemInstruction = system)
           .onSuccess { raw ->
-            val note = raw.trim().take(300)
-            if (note.isNotBlank() && !note.equals("PASS", ignoreCase = true)) {
-              _state.value = _state.value.copy(liveNotes = _state.value.liveNotes + note)
+            val notes =
+              raw
+                .lines()
+                .map { it.trim().trimStart('-', '•', '*', ' ') }
+                .filter { it.isNotBlank() && !it.equals("PASS", ignoreCase = true) }
+                .take(3)
+                .map { it.take(300) }
+            if (notes.isNotEmpty()) {
+              _state.value = _state.value.copy(liveNotes = _state.value.liveNotes + notes)
             }
           }
           .onFailure { Log.w(TAG, "Live note failed: ${it.message}") }
@@ -255,19 +264,29 @@ object RambleManager {
         _state.value.copy(recording = false, processing = false, status = "No speech captured")
       return
     }
+    val wordCount = transcript.split(" ").size
+    // Empirical on the CPU box: ~150s base (decode of a structured answer at
+    // ~7 tok/s) plus prefill that scales with transcript length.
+    val estimatedSec = 150 + (wordCount * 0.03).toInt()
     _state.value =
       _state.value.copy(
         recording = false,
         processing = true,
-        status = "Analyzing ${transcript.split(" ").size} words (~2-4 min)…",
+        processingProgress = 0f,
+        status = "Analyzing $wordCount words (~${(estimatedSec + 30) / 60} min)…",
       )
     val ticker =
       VoiceAssistantManager.routeScope.launch {
         val analysisStart = System.currentTimeMillis()
         while (true) {
-          delay(15_000L)
+          delay(2_000L)
           val sec = (System.currentTimeMillis() - analysisStart) / 1000
-          _state.value = _state.value.copy(status = "Analyzing… ${sec}s")
+          val fraction = (sec.toFloat() / estimatedSec).coerceAtMost(0.95f)
+          _state.value =
+            _state.value.copy(
+              processingProgress = fraction,
+              status = "Analyzing… ${sec}s of ~${estimatedSec}s",
+            )
         }
       }
     val result = runBlocking {
@@ -283,11 +302,20 @@ object RambleManager {
     result.fold(
       onSuccess = { text ->
         _state.value =
-          _state.value.copy(processing = false, result = text.orEmpty(), status = "Done")
+          _state.value.copy(
+            processing = false,
+            processingProgress = 1f,
+            result = text.orEmpty(),
+            status = "Done",
+          )
       },
       onFailure = { e ->
         _state.value =
-          _state.value.copy(processing = false, status = "Analysis failed: ${e.message}")
+          _state.value.copy(
+            processing = false,
+            processingProgress = 0f,
+            status = "Analysis failed: ${e.message}",
+          )
       },
     )
   }

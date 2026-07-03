@@ -510,6 +510,13 @@ private fun RambleSection(
     )
   }
 
+  if (rambleState.processing) {
+    LinearProgressIndicator(
+      progress = { rambleState.processingProgress },
+      modifier = Modifier.fillMaxWidth(),
+    )
+  }
+
   if (rambleState.status.isNotEmpty()) {
     Text(
       rambleState.status,
