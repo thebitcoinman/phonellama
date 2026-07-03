@@ -1,0 +1,13 @@
+services:
+  orchestrator:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      OLLAMA_R740: ${OLLAMA_R740:-http://host.docker.internal:11434}
+      OLLAMA_DESKTOP: ${OLLAMA_DESKTOP:-http://192.168.2.38:11434}
+      OLLAMA_R740_MODEL: ${OLLAMA_R740_MODEL:-qwen2.5:7b}
+      OLLAMA_DESKTOP_MODEL: ${OLLAMA_DESKTOP_MODEL:-qwen2.5:32b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

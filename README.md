@@ -250,6 +250,38 @@ Please test on-device before submitting model additions.
 
 ---
 
+## Voice Assistant + Tiered Orchestrator
+
+PhoneLlama can route voice commands through three tiers:
+
+| Tier | Handler | Model |
+|---|---|---|
+| Simple (greetings, math, lookups) | On-phone | Gemma-4-E2B-it |
+| Medium (summarize, explain) | On-phone | Gemma-4-E4B-it |
+| **Weather / forecast** | **On-phone (live API)** | **Open-Meteo** — no API key |
+| Complex (code gen, long reasoning) | Proxmox orchestrator | Ollama on NixOS VM (qwen3:30b-a3b, CPU) |
+| News, stocks, live scores | Proxmox orchestrator | Ollama + tools (extend orchestrator) |
+| "use claw …" / "ask claw …" | OpenClaw agent on NixOS VM | Web search, browser, skills (slower) |
+
+### Setup
+
+1. Download **Gemma-4-E2B-it** and/or **Gemma-4-E4B-it** from the Models tab (Gemma-4-E4B is auto-downloaded on first launch).
+2. Open **Voice Assistant** from the home drawer.
+3. Enable Voice Assistant (pre-loads E2B for instant simple responses).
+4. Choose orchestrator mode: **Phone-first** (recommended), Phone-only, or Remote-only.
+5. Deploy the Proxmox orchestrator for complex-tier queries — see [orchestrator/README.md](orchestrator/README.md) for the self-contained NixOS VM deployment (Ollama + orchestrator via `docker-compose.proxmox.yml`).
+
+Set the orchestrator URL on the Voice Assistant screen (default `http://100.69.62.49:8081` — the NixOS VM over Tailscale; use `http://192.168.1.100:8081` if the phone is on that LAN).
+
+### Push-to-talk and wake word
+
+- **Push-to-talk**: hold the mic button on the Voice Assistant screen (uses Android speech recognition in PR1).
+- **Wake phrase** (offline): download the Vosk model, set a wake phrase (default `hey llama`), and enable wake phrase listening. Uses Vosk grammar mode — fully offline, no third-party API keys.
+
+**Weather:** Ask e.g. *"What's the weather in Seattle?"* — routed to [Open-Meteo](https://open-meteo.com/) on the phone (needs internet, no API key). If you omit a city, defaults to San Francisco. Works in all orchestrator modes including Phone-only.
+
+---
+
 ## License
 
 Apache 2.0 — same as [Google AI Edge Gallery](https://github.com/google-ai-edge/ai-edge-gallery).

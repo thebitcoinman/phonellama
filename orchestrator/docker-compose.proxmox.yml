@@ -1,0 +1,48 @@
+# Self-contained deployment for the CPU-only NixOS VM on Proxmox.
+# Runs Ollama (qwen3:30b-a3b MoE, fast on CPU) and the orchestrator together;
+# both router targets point at the local Ollama.
+#
+#   docker compose -f docker-compose.proxmox.yml up -d --build
+#   docker exec phonellama-ollama ollama pull qwen3:30b-a3b
+#
+# Orchestrator listens on 8081 (8080 is taken by searxng on this host).
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: phonellama-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"        # keep model resident; 76 GB RAM available
+      OLLAMA_CONTEXT_LENGTH: "32768"  # roomy enough for OpenClaw's agent prompt as fallback
+      OLLAMA_NUM_PARALLEL: "2"        # separate slots so phone queries don't evict OpenClaw's cached prefix
+    restart: unless-stopped
+
+  orchestrator:
+    build: .
+    container_name: phonellama-orchestrator
+    ports:
+      - "8081:8080"
+    environment:
+      OLLAMA_R740: http://ollama:11434
+      OLLAMA_DESKTOP: http://ollama:11434
+      OLLAMA_R740_MODEL: ${PROXMOX_MODEL:-qwen3:30b-a3b}
+      OLLAMA_DESKTOP_MODEL: ${PROXMOX_MODEL:-qwen3:30b-a3b}
+      # OpenClaw gateway on the docker host; token comes from .env (not committed).
+      OPENCLAW_URL: http://host.docker.internal:18789
+      OPENCLAW_TOKEN: ${OPENCLAW_TOKEN:-}
+      OPENCLAW_TRIGGERS: ${OPENCLAW_TRIGGERS:-use claw,ask claw,hey claw}
+      # Tool-using agent turns need two CPU prefills; keep just under the
+      # phone's 600s read timeout.
+      OPENCLAW_TIMEOUT: "590"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama-models:

@@ -1,0 +1,278 @@
+<title>PhoneLlama Pipeline Test</title>
+<style>
+  :root {
+    --ground: #0F1317;
+    --panel: #181F26;
+    --panel-2: #1E2730;
+    --line: #2A343E;
+    --ink: #E6ECF1;
+    --muted: #87939E;
+    --accent: #E8A33D;
+    --ok: #46B57C;
+    --fail: #D95459;
+    --pending: #87939E;
+    --mono: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  html { background: var(--ground); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    margin: 0;
+    padding: 32px 20px 64px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+
+  header { margin-bottom: 28px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 6px;
+  }
+  h1 {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 4px;
+    text-wrap: balance;
+  }
+  .runmeta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .verdict {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin: 20px 0 36px;
+  }
+  .verdict .cell {
+    flex: 1 1 150px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px 16px;
+  }
+  .cell .k {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 4px;
+  }
+  .cell .v {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .cell .v.ok { color: var(--ok); }
+  .cell .v.run { color: var(--accent); }
+
+  /* pipeline trace */
+  .trace { position: relative; padding-left: 34px; }
+  .trace::before {
+    content: "";
+    position: absolute;
+    left: 11px;
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    background: var(--line);
+  }
+  .stage {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 16px 18px 14px;
+    margin-bottom: 18px;
+  }
+  .stage::before {
+    content: "";
+    position: absolute;
+    left: -29px;
+    top: 22px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--ground);
+    border: 3px solid var(--pending);
+  }
+  .stage.ok::before   { border-color: var(--ok); }
+  .stage.fail::before { border-color: var(--fail); }
+  .stage.run::before  { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .stage.run::before { animation: none; } }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(232,163,61,0.18); } }
+
+  .stage-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .stage h2 {
+    font-size: 15.5px;
+    font-weight: 650;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .stage h2 .path {
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .chiprow { display: flex; gap: 8px; align-items: center; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 2px 9px;
+    border-radius: 999px;
+    text-transform: uppercase;
+  }
+  .chip.ok   { color: var(--ok);   background: rgba(70,181,124,0.12); }
+  .chip.fail { color: var(--fail); background: rgba(217,84,89,0.12); }
+  .chip.run  { color: var(--accent); background: rgba(232,163,61,0.13); }
+  .chip.wait { color: var(--pending); background: rgba(135,147,158,0.12); }
+  .lat {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .lat small { color: var(--muted); font-size: 11px; }
+
+  .what {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 6px 0 10px;
+    max-width: 62ch;
+  }
+  .evidence {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--ground);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    color: #B9C4CE;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+  }
+  .evidence b { color: var(--ink); font-weight: 600; }
+  .evidence .hl { color: var(--accent); }
+
+  /* latency bars */
+  .bars { margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; }
+  .bar-row { display: grid; grid-template-columns: 150px 1fr 70px; gap: 10px; align-items: center; }
+  .bar-label { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+  .bar-track { background: var(--ground); border-radius: 3px; height: 14px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; background: var(--accent); min-width: 2px; }
+  .bar-fill.dim { background: #5B6874; }
+  .bar-val { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  /* your-turn card */
+  .stage.you { border-color: rgba(232,163,61,0.45); }
+  .stage.you ol { margin: 8px 0 4px; padding-left: 20px; font-size: 13.5px; }
+  .stage.you li { margin-bottom: 6px; }
+  .stage.you li b { color: var(--accent); font-weight: 600; }
+
+  .footnote {
+    margin-top: 28px;
+    color: var(--muted);
+    font-size: 12.5px;
+    max-width: 68ch;
+  }
+  .footnote b { color: var(--ink); }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">PhoneLlama &middot; Voice Pipeline</p>
+    <h1>End-to-end pipeline test</h1>
+    <p class="runmeta">run 2026-07-03 07:05 EDT &middot; S23 on home WiFi (192.168.2.202) &rarr; NixOS VM via Tailscale (100.69.62.49)</p>
+  </header>
+
+  <div class="verdict">
+    <div class="cell"><span class="k">Stages passed</span><span class="v ok" id="v-pass">4 / 4</span></div>
+    <div class="cell"><span class="k">Voice &rarr; live answer</span><span class="v ok" id="v-claw">5 m 11 s</span></div>
+    <div class="cell"><span class="k">Answer vs live HN</span><span class="v ok">verified real</span></div>
+  </div>
+
+  <div class="trace">
+
+    <div class="stage ok">
+      <div class="stage-head">
+        <h2>1 &middot; Phone &rarr; Orchestrator <span class="path">reachability</span></h2>
+        <div class="chiprow"><span class="lat">390 ms</span><span class="chip ok">pass</span></div>
+      </div>
+      <p class="what">curl from the S23 shell to the orchestrator's health endpoint over Tailscale. Proves network, port publish, and the FastAPI service.</p>
+      <pre class="evidence">$ curl http://100.69.62.49:8081/health
+<b>{"status":"ok","service":"phonellama-orchestrator"}</b>   0.39s</pre>
+    </div>
+
+    <div class="stage ok">
+      <div class="stage-head">
+        <h2>2 &middot; Orchestrator &rarr; qwen3:30b-a3b <span class="path">complex tier</span></h2>
+        <div class="chiprow"><span class="lat">69 s</span><span class="chip ok">pass</span></div>
+      </div>
+      <p class="what">A real complex-tier question from the phone, answered by the local CPU model with thinking suppressed and the voice-length system prompt.</p>
+      <pre class="evidence">$ POST /v1/route  {"prompt":"explain briefly what RAID 6 is"}
+target: <b>http://ollama:11434 (qwen3:30b-a3b)</b>
+<b>"RAID 6 uses two parity blocks (instead of one like RAID 5) to protect
+ against two simultaneous drive failures&hellip;"</b>   1m09s</pre>
+    </div>
+
+    <div class="stage ok" id="stage-claw">
+      <div class="stage-head">
+        <h2>3 &middot; Orchestrator &rarr; OpenClaw agent <span class="path">wake-word route + web search</span></h2>
+        <div class="chiprow"><span class="lat" id="claw-lat">fixed + verified</span><span class="chip ok">pass</span></div>
+      </div>
+      <p class="what">The gateway upgrade had silently broken web search (searxng became an external plugin in 2026.6.11) &mdash; failed searches made the model improvise and burned timeout budgets. Three fixes restored it, and the final answer was cross-checked against the live HN front page.</p>
+      <pre class="evidence" id="claw-evidence">fix 1: openclaw plugins install @openclaw/searxng-plugin  &rarr; 3 plugins loaded
+fix 2: plugins.entries.searxng baseUrl 127.0.0.1:8888 &rarr; <b>:8080</b>
+fix 3: searxng settings.yml formats: + json  &rarr; real results
+fix 4: diagnostics.stuckSessionAbortMs &rarr; 20 min (watchdog was killing
+       slow-but-healthy CPU turns at ~370 s of "no progress")</pre>
+    </div>
+
+    <div class="stage ok" id="stage-voice">
+      <div class="stage-head">
+        <h2>4 &middot; Voice &rarr; live answer on the S23 <span class="path">the full pipeline, by voice</span></h2>
+        <div class="chiprow"><span class="lat">5 m 11 s</span><span class="chip ok">pass</span></div>
+      </div>
+      <p class="what">Final run at 08:33: hold-to-talk &rarr; claw trigger &rarr; orchestrator &rarr; OpenClaw agent &rarr; real searxng search &rarr; answer spoken back. Cross-checked against the live HN front page: the story is real, rank #2, same submitter &mdash; the agent's 742 points was just an older index snapshot of a climbing story.</p>
+      <pre class="evidence">08:33:17  routeTranscript: "use claw what's the top story on Hacker News"
+08:38:27  response code 200   (310,762 ms end-to-end)
+<b>"The top story on Hacker News is: 'Virginia bans sale of geolocation
+ data' (742 points, 121 comments, posted 11 hours ago by toomuchtodo)"</b>
+live HN check: rank #2 &middot; 841 pts &middot; 130 comments &middot; by toomuchtodo &#10003; REAL</pre>
+      <p class="what" style="margin-top:10px"><b>What it took:</b> Phone-only mode &rarr; Phone-first (the original "silent hang"); searxng plugin reinstall + port + JSON; gateway stall-watchdog relaxed for CPU-speed turns; process-lifetime routing scope; wake-service auto-revive on app launch. Known quirk: the wake detector false-triggers on room audio &mdash; spun off as a separate task.</p>
+    </div>
+
+  </div>
+
+  <div class="stage" style="margin-top:6px">
+    <div class="stage-head"><h2>Measured latency by route</h2></div>
+    <div class="bars">
+      <div class="bar-row"><span class="bar-label">health check</span><div class="bar-track"><div class="bar-fill dim" style="width:0.5%"></div></div><span class="bar-val">0.4 s</span></div>
+      <div class="bar-row"><span class="bar-label">weather (live API)</span><div class="bar-track"><div class="bar-fill dim" style="width:0.8%"></div></div><span class="bar-val">1.0 s</span></div>
+      <div class="bar-row"><span class="bar-label">complex &middot; qwen3</span><div class="bar-track"><div class="bar-fill" style="width:32%"></div></div><span class="bar-val">69 s</span></div>
+      <div class="bar-row" id="bar-claw"><span class="bar-label">claw &middot; agent+web</span><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div><span class="bar-val" id="bar-claw-val">549 s*</span></div>
+    </div>
+  </div>
+
+  <p class="footnote"><b>Why claw is slow:</b> the OpenClaw agent's ~8.5k-token system prompt prefills at ~45 tok/s on the VM's 20 CPU cores, and a web-search turn prefills twice (prompt, then tool results) before decoding at ~7 tok/s. Warm slot cache cuts this substantially; <code>OLLAMA_NUM_PARALLEL=2</code> keeps phone queries from evicting it.</p>
+</div>

@@ -1,0 +1,457 @@
+/*
+ * Copyright 2026 PhoneLlama
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+package com.google.ai.edge.gallery.voiceassistant
+
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import android.os.Handler
+import android.os.Looper
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.google.ai.edge.gallery.data.BuiltInTaskId
+import com.google.ai.edge.gallery.data.Model
+import com.google.ai.edge.gallery.proto.OrchestratorMode
+import com.google.ai.edge.gallery.ui.common.textandvoiceinput.HoldToDictate
+import com.google.ai.edge.gallery.ui.common.textandvoiceinput.HoldToDictateViewModel
+import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+@Composable
+fun VoiceAssistantScreen(
+  modelManagerViewModel: ModelManagerViewModel,
+  voiceViewModel: VoiceAssistantViewModel = hiltViewModel(),
+  holdToDictateViewModel: HoldToDictateViewModel = hiltViewModel(),
+) {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  val mainHandler = remember { Handler(Looper.getMainLooper()) }
+  val scope = rememberCoroutineScope()
+  val settings by voiceViewModel.uiState.collectAsState()
+  val assistantState by VoiceAssistantManager.state.collectAsState()
+  val modelUiState by modelManagerViewModel.uiState.collectAsState()
+  var wakePhraseText by remember(settings.wakePhrase) { mutableStateOf(settings.wakePhrase) }
+  var micPermissionGranted by remember { mutableStateOf(false) }
+  var voskReady by remember { mutableStateOf(VoskTranscriber.isModelDownloaded(context)) }
+  var voskDownloading by remember { mutableStateOf(false) }
+  var voskDownloadProgress by remember { mutableStateOf<Float?>(null) }
+
+  androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+    val observer =
+      LifecycleEventObserver { _, event ->
+        if (event == Lifecycle.Event.ON_RESUME) {
+          voskReady = VoskTranscriber.isModelDownloaded(context)
+        }
+      }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
+
+  val micPermissionLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      micPermissionGranted = granted
+      if (!granted) {
+        VoiceAssistantManager.updateStatus("Microphone permission is required for voice input")
+      }
+    }
+
+  LaunchedEffect(Unit) {
+    micPermissionGranted =
+      ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+        PackageManager.PERMISSION_GRANTED
+    if (!micPermissionGranted) {
+      micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+  }
+
+  // The wake service dies with the process (app update, crash, swipe-away) while the
+  // enabled flag persists — revive it so the toggle state and reality match.
+  LaunchedEffect(settings.wakeWordEnabled, settings.enabled) {
+    if (
+      settings.wakeWordEnabled &&
+        settings.enabled &&
+        !assistantState.wakeWordListening &&
+        VoskTranscriber.isModelDownloaded(context)
+    ) {
+      WakeWordManager.start(context, modelManagerViewModel, voiceViewModel)
+    }
+  }
+
+  val loadedModelName =
+    remember(modelUiState) {
+      modelManagerViewModel.getAllModels().firstOrNull { it.instance != null }?.name ?: "None"
+    }
+  val chatTask = remember(modelUiState) { modelManagerViewModel.getTaskById(BuiltInTaskId.LLM_CHAT) }
+  val gemmaModelsAvailable =
+    remember(modelUiState) {
+      val isDownloaded = { model: Model -> modelManagerViewModel.isModelDownloaded(model) }
+      VoiceAssistantModels.findModel(
+        modelManagerViewModel.getAllModels(),
+        ComplexityTier.SIMPLE,
+        isDownloaded,
+      )?.let(isDownloaded) == true
+    }
+
+  Column(
+    modifier =
+      Modifier.fillMaxSize()
+        .verticalScroll(rememberScrollState())
+        .padding(16.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    Text(
+      "Voice Assistant",
+      style = MaterialTheme.typography.headlineSmall,
+      fontWeight = FontWeight.Bold,
+    )
+    Text(
+      "Tiered routing: Gemma E2B (simple) → Gemma E4B (medium) → Proxmox (complex). Weather uses live Open-Meteo.",
+      style = MaterialTheme.typography.bodyMedium,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    if (assistantState.statusMessage.isNotEmpty()) {
+      Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+      ) {
+        Text(
+          assistantState.statusMessage,
+          modifier = Modifier.padding(12.dp),
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      }
+    }
+
+    if (!gemmaModelsAvailable) {
+      Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+      ) {
+        Text(
+          "Download Gemma-4-E2B-it (or Gemma-4-E4B-it) from the Models tab before using Voice Assistant.",
+          modifier = Modifier.padding(12.dp),
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onErrorContainer,
+        )
+      }
+    }
+
+    if (!micPermissionGranted) {
+      OutlinedButton(
+        onClick = { micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Text("Grant microphone permission")
+      }
+    }
+
+    Card(
+      modifier = Modifier.fillMaxWidth(),
+      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text("Enable Voice Assistant", fontWeight = FontWeight.Medium)
+            Text(
+              "Pre-loads Gemma E2B for instant simple responses",
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
+          Switch(
+            checked = settings.enabled,
+            onCheckedChange = { voiceViewModel.setEnabled(it, modelManagerViewModel) },
+          )
+        }
+        Text("Loaded model: $loadedModelName", style = MaterialTheme.typography.bodySmall)
+        if (assistantState.wakeWordListening) {
+          Text(
+            "Wake phrase listening",
+            color = MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.bodySmall,
+          )
+        }
+        if (assistantState.isProcessing) {
+          Text("Processing…", style = MaterialTheme.typography.bodySmall)
+        }
+      }
+    }
+
+    Text("Orchestrator mode", fontWeight = FontWeight.Medium)
+    OrchestratorModeOption(
+      label = "Phone-first (recommended)",
+      description = "Simple/medium on-device; complex → Proxmox",
+      selected = settings.orchestratorMode == OrchestratorMode.ORCHESTRATOR_MODE_PHONE_FIRST,
+      onSelect = {
+        voiceViewModel.setOrchestratorMode(OrchestratorMode.ORCHESTRATOR_MODE_PHONE_FIRST)
+        VoiceAssistantManager.updateStatus("Mode: Phone-first")
+      },
+    )
+    OrchestratorModeOption(
+      label = "Phone-only",
+      description = "All queries stay on-device (complex uses E4B)",
+      selected = settings.orchestratorMode == OrchestratorMode.ORCHESTRATOR_MODE_PHONE_ONLY,
+      onSelect = {
+        voiceViewModel.setOrchestratorMode(OrchestratorMode.ORCHESTRATOR_MODE_PHONE_ONLY)
+        VoiceAssistantManager.updateStatus("Mode: Phone-only")
+      },
+    )
+    OrchestratorModeOption(
+      label = "Remote-only",
+      description = "All queries go to Proxmox orchestrator",
+      selected = settings.orchestratorMode == OrchestratorMode.ORCHESTRATOR_MODE_REMOTE_ONLY,
+      onSelect = {
+        voiceViewModel.setOrchestratorMode(OrchestratorMode.ORCHESTRATOR_MODE_REMOTE_ONLY)
+        VoiceAssistantManager.updateStatus("Mode: Remote-only")
+      },
+    )
+
+    OutlinedTextField(
+      value = settings.orchestratorUrl,
+      onValueChange = { voiceViewModel.setOrchestratorUrl(it) },
+      label = { Text("Proxmox orchestrator URL") },
+      modifier = Modifier.fillMaxWidth(),
+      singleLine = true,
+    )
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Wake phrase (offline)", fontWeight = FontWeight.Medium)
+        Text(
+          "Vosk grammar mode — no API keys. Say the wake phrase, pause, then speak your command. " +
+            "Also listens for \"hey phone llama\" and \"phone llama\".",
+          style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+          value = wakePhraseText,
+          onValueChange = { wakePhraseText = it },
+          label = { Text("Primary wake phrase") },
+          modifier = Modifier.fillMaxWidth(),
+          singleLine = true,
+        )
+        Button(
+          onClick = {
+            voiceViewModel.saveWakePhrase(wakePhraseText)
+            VoiceAssistantManager.updateStatus("Wake phrase saved: $wakePhraseText")
+            if (settings.wakeWordEnabled) {
+              WakeWordManager.stop(context)
+              voiceViewModel.setWakeWordEnabled(true, modelManagerViewModel)
+            }
+          },
+          enabled = !voskDownloading,
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          Text("Save wake phrase")
+        }
+        if (!voskReady) {
+          if (voskDownloading) {
+            LinearProgressIndicator(
+              progress = { voskDownloadProgress ?: 0f },
+              modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+              assistantState.statusMessage.ifBlank { "Downloading Vosk STT model…" },
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
+          Button(
+            onClick = {
+              scope.launch {
+                voskDownloading = true
+                voskDownloadProgress = 0f
+                VoiceAssistantManager.updateStatus("Downloading Vosk STT… 0%")
+                val result =
+                  withContext(Dispatchers.IO) {
+                    VoskTranscriber.downloadModel(context) { msg, fraction ->
+                      VoiceAssistantManager.updateStatus(msg)
+                      mainHandler.post { voskDownloadProgress = fraction }
+                    }
+                  }
+                voskReady = result.isSuccess
+                voskDownloading = false
+                voskDownloadProgress = if (result.isSuccess) 1f else null
+                if (result.isFailure) {
+                  VoiceAssistantManager.updateStatus(
+                    result.exceptionOrNull()?.message
+                      ?: "Vosk download failed — check internet and retry"
+                  )
+                }
+              }
+            },
+            enabled = !voskDownloading,
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              if (voskDownloading) "Downloading Vosk STT…"
+              else "Download Vosk STT model (~40 MB, needs internet once)"
+            )
+          }
+        } else {
+          Text("Vosk model ready", style = MaterialTheme.typography.bodySmall)
+        }
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("Enable wake phrase listening")
+          Switch(
+            checked = settings.wakeWordEnabled,
+            enabled = settings.enabled && voskReady && micPermissionGranted && !voskDownloading,
+            onCheckedChange = {
+              voiceViewModel.setWakeWordEnabled(it, modelManagerViewModel)
+            },
+          )
+        }
+        if (settings.enabled && !voskReady) {
+          Text(
+            "Download the Vosk model before enabling wake phrase listening.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+          )
+        }
+      }
+    }
+
+    Text("Push-to-talk", fontWeight = FontWeight.Medium)
+    if (!settings.enabled) {
+      Text(
+        "Turn on Voice Assistant above to use push-to-talk.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    } else if (chatTask == null) {
+      Text(
+        "Model list still loading — go back and wait for the home screen to finish loading.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+      )
+    } else if (!micPermissionGranted) {
+      Text(
+        "Grant microphone permission to use push-to-talk.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+      )
+    } else {
+      HoldToDictate(
+        task = chatTask,
+        viewModel = holdToDictateViewModel,
+        onDone = { transcript ->
+          if (transcript.isBlank()) {
+            VoiceAssistantManager.updateStatus("No speech heard — try again")
+          } else {
+            voiceViewModel.routeTranscript(transcript, modelManagerViewModel)
+          }
+        },
+        onAmplitudeChanged = {},
+        enabled = settings.enabled && !assistantState.isProcessing,
+        modifier = Modifier.fillMaxWidth().height(72.dp),
+      )
+      Text(
+        "Hold the button, speak, then release. Uses Android speech recognition (needs network).",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+
+    if (assistantState.lastTranscript.isNotEmpty() || assistantState.lastResponse.isNotEmpty()) {
+      Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+      ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text("Last interaction", fontWeight = FontWeight.Medium)
+          if (assistantState.lastTierLabel.isNotEmpty()) {
+            Text(
+              "Tier: ${assistantState.lastTierLabel} · ${assistantState.lastModelOrTarget} · ${assistantState.lastLatencyMs}ms",
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
+          if (assistantState.lastTranscript.isNotEmpty()) {
+            Text("You: ${assistantState.lastTranscript}", style = MaterialTheme.typography.bodyMedium)
+          }
+          if (assistantState.lastResponse.isNotEmpty()) {
+            Text(
+              "Assistant: ${assistantState.lastResponse}",
+              style = MaterialTheme.typography.bodyMedium,
+            )
+          }
+        }
+      }
+    }
+
+    Spacer(Modifier.height(32.dp))
+  }
+}
+
+@Composable
+private fun OrchestratorModeOption(
+  label: String,
+  description: String,
+  selected: Boolean,
+  onSelect: () -> Unit,
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    RadioButton(selected = selected, onClick = onSelect)
+    Column(Modifier.padding(start = 4.dp)) {
+      Text(label, fontWeight = FontWeight.Medium)
+      Text(description, style = MaterialTheme.typography.bodySmall)
+    }
+  }
+}

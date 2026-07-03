@@ -36,8 +36,8 @@ android {
     applicationId = "com.phonellama.app"
     minSdk = 31
     targetSdk = 35
-    versionCode = 30
-    versionName = "1.0.13"
+    versionCode = 33
+    versionName = "1.0.15"
 
     // Needed for HuggingFace auth workflows.
     // Use the scheme of the "Redirect URLs" in HuggingFace app.
@@ -91,6 +91,7 @@ dependencies {
   implementation(libs.androidx.datastore)
   implementation(libs.com.google.code.gson)
   implementation(libs.nanohttpd)
+  implementation(libs.vosk.android)
   implementation(libs.androidx.lifecycle.process)
   implementation(libs.androidx.security.crypto)
   implementation(libs.androidx.webkit)
