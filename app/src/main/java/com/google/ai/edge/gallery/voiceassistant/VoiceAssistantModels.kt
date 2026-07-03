@@ -64,10 +64,14 @@ object VoiceAssistantModels {
       allModels.firstOrNull { matches(it, alias) && isDownloaded(it) }?.let { return it }
     }
 
-    if (tier == ComplexityTier.SIMPLE) {
-      for (alias in E4B_ALIASES) {
-        allModels.firstOrNull { matches(it, alias) && isDownloaded(it) }?.let { return it }
+    // Cross-tier fallback: any downloaded Gemma beats an undownloaded ideal one.
+    val fallbackAliases =
+      when (tier) {
+        ComplexityTier.SIMPLE -> E4B_ALIASES
+        ComplexityTier.MEDIUM, ComplexityTier.COMPLEX -> E2B_ALIASES
       }
+    for (alias in fallbackAliases) {
+      allModels.firstOrNull { matches(it, alias) && isDownloaded(it) }?.let { return it }
     }
 
     // Catalog-only match (for error messages — not downloaded yet).

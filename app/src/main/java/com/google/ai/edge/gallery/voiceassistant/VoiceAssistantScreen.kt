@@ -153,16 +153,23 @@ fun VoiceAssistantScreen(
         .padding(16.dp),
     verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
-    Text(
-      "Voice Assistant",
-      style = MaterialTheme.typography.headlineSmall,
-      fontWeight = FontWeight.Bold,
-    )
-    Text(
-      "Tiered routing: Gemma E2B (simple) → Gemma E4B (medium) → Proxmox (complex). Weather uses live Open-Meteo.",
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    var showRoutingInfo by remember { mutableStateOf(false) }
+    if (showRoutingInfo) {
+      AlertDialog(
+        onDismissRequest = { showRoutingInfo = false },
+        confirmButton = { TextButton(onClick = { showRoutingInfo = false }) { Text("Got it") } },
+        title = { Text("How routing works") },
+        text = {
+          Text(
+            "Tiered routing: Gemma E2B on-device (simple) → Gemma E4B on-device (medium) → " +
+              "Proxmox orchestrator (complex). Weather uses live Open-Meteo. " +
+              "\"Use claw …\" routes to the OpenClaw agent with web search. " +
+              "Ramble mode transcribes long think-aloud sessions offline and analyzes them " +
+              "on the Proxmox box."
+          )
+        },
+      )
+    }
 
     if (assistantState.statusMessage.isNotEmpty()) {
       Card(
@@ -175,6 +182,39 @@ fun VoiceAssistantScreen(
           style = MaterialTheme.typography.bodyMedium,
         )
       }
+    }
+
+    // Outputs live at the top: newest thing you asked for is the first thing you see.
+    RambleOutputs()
+
+    if (assistantState.lastTranscript.isNotEmpty() || assistantState.lastResponse.isNotEmpty()) {
+      Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+      ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text("Last interaction", fontWeight = FontWeight.Medium)
+          if (assistantState.lastTierLabel.isNotEmpty()) {
+            Text(
+              "Tier: ${assistantState.lastTierLabel} · ${assistantState.lastModelOrTarget} · ${assistantState.lastLatencyMs}ms",
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
+          if (assistantState.lastTranscript.isNotEmpty()) {
+            Text("You: ${assistantState.lastTranscript}", style = MaterialTheme.typography.bodyMedium)
+          }
+          if (assistantState.lastResponse.isNotEmpty()) {
+            Text(
+              "Assistant: ${assistantState.lastResponse}",
+              style = MaterialTheme.typography.bodyMedium,
+            )
+          }
+        }
+      }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      TextButton(onClick = { showRoutingInfo = true }) { Text("ⓘ How routing works") }
     }
 
     if (!gemmaModelsAvailable) {
@@ -413,32 +453,6 @@ fun VoiceAssistantScreen(
       )
     }
 
-    if (assistantState.lastTranscript.isNotEmpty() || assistantState.lastResponse.isNotEmpty()) {
-      Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-      ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-          Text("Last interaction", fontWeight = FontWeight.Medium)
-          if (assistantState.lastTierLabel.isNotEmpty()) {
-            Text(
-              "Tier: ${assistantState.lastTierLabel} · ${assistantState.lastModelOrTarget} · ${assistantState.lastLatencyMs}ms",
-              style = MaterialTheme.typography.bodySmall,
-            )
-          }
-          if (assistantState.lastTranscript.isNotEmpty()) {
-            Text("You: ${assistantState.lastTranscript}", style = MaterialTheme.typography.bodyMedium)
-          }
-          if (assistantState.lastResponse.isNotEmpty()) {
-            Text(
-              "Assistant: ${assistantState.lastResponse}",
-              style = MaterialTheme.typography.bodyMedium,
-            )
-          }
-        }
-      }
-    }
-
     RambleSection(
       enabled = settings.enabled && micPermissionGranted && voskReady,
       orchestratorUrl = settings.orchestratorUrl,
@@ -620,6 +634,32 @@ private fun RambleSection(
     }
   }
 
+  // Idle-time messages ("Discarded", model prompts) — active-session status
+  // renders in the outputs block at the top of the screen instead.
+  if (
+    rambleState.status.isNotEmpty() &&
+      !rambleState.recording &&
+      !rambleState.processing &&
+      rambleState.result.isEmpty()
+  ) {
+    Text(
+      rambleState.status,
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+  }
+
+  RambleHistoryTable()
+}
+
+/**
+ * Live ramble outputs — rendered at the top of the screen, separate from the
+ * ramble controls further down.
+ */
+@Composable
+private fun RambleOutputs() {
+  val rambleState by RambleManager.state.collectAsState()
+
   if (rambleState.processing) {
     LinearProgressIndicator(
       progress = { rambleState.processingProgress },
@@ -627,7 +667,10 @@ private fun RambleSection(
     )
   }
 
-  if (rambleState.status.isNotEmpty()) {
+  if (
+    rambleState.status.isNotEmpty() &&
+      (rambleState.recording || rambleState.processing || rambleState.result.isNotEmpty())
+  ) {
     Text(
       rambleState.status,
       style = MaterialTheme.typography.bodySmall,
@@ -678,8 +721,6 @@ private fun RambleSection(
       }
     }
   }
-
-  RambleHistoryTable()
 }
 
 @Composable
