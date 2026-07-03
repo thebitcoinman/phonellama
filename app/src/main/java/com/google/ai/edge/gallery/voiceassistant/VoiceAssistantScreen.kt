@@ -478,55 +478,62 @@ private fun RambleSection(
     color = MaterialTheme.colorScheme.onSurfaceVariant,
   )
 
+  var whisperReady by remember { mutableStateOf(SherpaTranscriber.isWhisperDownloaded(context)) }
   var zipformerReady by remember { mutableStateOf(SherpaTranscriber.isModelDownloaded(context)) }
-  var zipformerDownloading by remember { mutableStateOf(false) }
-  var zipformerProgress by remember { mutableStateOf<Float?>(null) }
-  var zipformerStatus by remember { mutableStateOf("") }
-  if (!zipformerReady) {
+  var sttDownloading by remember { mutableStateOf(false) }
+  var sttProgress by remember { mutableStateOf<Float?>(null) }
+  var sttStatus by remember { mutableStateOf("") }
+
+  Text(
+    when {
+      whisperReady -> "STT engine: Whisper (best accuracy) ✓"
+      zipformerReady -> "STT engine: Zipformer — download Whisper below for the best accuracy"
+      else -> "STT engine: Vosk (basic) — download Whisper below for the best accuracy"
+    },
+    style = MaterialTheme.typography.bodySmall,
+    color =
+      if (whisperReady) MaterialTheme.colorScheme.primary
+      else MaterialTheme.colorScheme.onSurfaceVariant,
+  )
+  if (!whisperReady) {
     OutlinedButton(
       onClick = {
-        zipformerDownloading = true
+        sttDownloading = true
         VoiceAssistantManager.routeScope.launch {
-          SherpaTranscriber.downloadModel(context.applicationContext, orchestratorUrl) { msg, frac ->
-              zipformerStatus = msg
-              zipformerProgress = frac
+          SherpaTranscriber.downloadWhisper(context.applicationContext, orchestratorUrl) { msg, frac ->
+              sttStatus = msg
+              sttProgress = frac
             }
             .fold(
               onSuccess = {
-                zipformerReady = true
-                zipformerDownloading = false
+                whisperReady = true
+                sttDownloading = false
               },
               onFailure = {
-                zipformerStatus = "Download failed: ${it.message}"
-                zipformerDownloading = false
+                sttStatus = "Download failed: ${it.message}"
+                sttDownloading = false
               },
             )
         }
       },
-      enabled = !zipformerDownloading && !rambleState.recording && !rambleState.processing,
+      enabled = !sttDownloading && !rambleState.recording && !rambleState.processing,
       modifier = Modifier.fillMaxWidth(),
     ) {
-      Text(if (zipformerDownloading) "Downloading…" else "Download high-accuracy STT (54 MB)")
+      Text(if (sttDownloading) "Downloading…" else "Download Whisper STT (219 MB)")
     }
-    if (zipformerDownloading) {
+    if (sttDownloading) {
       LinearProgressIndicator(
-        progress = { zipformerProgress ?: 0f },
+        progress = { sttProgress ?: 0f },
         modifier = Modifier.fillMaxWidth(),
       )
     }
-    if (zipformerStatus.isNotEmpty()) {
+    if (sttStatus.isNotEmpty()) {
       Text(
-        zipformerStatus,
+        sttStatus,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
     }
-  } else {
-    Text(
-      "STT engine: Zipformer (high accuracy) ✓",
-      style = MaterialTheme.typography.bodySmall,
-      color = MaterialTheme.colorScheme.primary,
-    )
   }
 
   Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

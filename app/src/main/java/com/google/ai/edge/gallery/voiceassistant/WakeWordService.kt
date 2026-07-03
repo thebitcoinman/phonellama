@@ -60,7 +60,10 @@ class WakeWordService : Service() {
           stopSelf()
           return START_NOT_STICKY
         }
-        startForeground(NOTIFICATION_ID, buildNotification("Listening for \"hey llama\"…"))
+        startForeground(
+          NOTIFICATION_ID,
+          buildNotification("Listening for \"${wakePhrases.first()}\"…"),
+        )
         startListening()
       }
       ACTION_STOP -> {

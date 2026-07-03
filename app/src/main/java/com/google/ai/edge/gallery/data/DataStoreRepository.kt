@@ -530,4 +530,4 @@ class DefaultDataStoreRepository(
 }
 
 const val DEFAULT_ORCHESTRATOR_URL = "http://100.69.62.49:8081"
-const val DEFAULT_WAKE_PHRASE = "hey llama"
+const val DEFAULT_WAKE_PHRASE = "hey morty"

@@ -15,11 +15,18 @@ import android.util.Log
 import com.k2fsa.sherpa.onnx.EndpointConfig
 import com.k2fsa.sherpa.onnx.EndpointRule
 import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.k2fsa.sherpa.onnx.OnlineModelConfig
 import com.k2fsa.sherpa.onnx.OnlineRecognizer
 import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OnlineStream
 import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.SileroVadModelConfig
+import com.k2fsa.sherpa.onnx.Vad
+import com.k2fsa.sherpa.onnx.VadModelConfig
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -36,6 +43,14 @@ private const val ENCODER = "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
 private const val DECODER = "decoder-epoch-99-avg-1-chunk-16-left-128.onnx"
 private const val JOINER = "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
 private const val TOKENS = "tokens.txt"
+
+private const val WHISPER_DIR = "sherpa-whisper-small-en"
+private const val WHISPER_ZIP = "sherpa-whisper-small-en-int8.zip"
+private const val W_ENCODER = "small.en-encoder.int8.onnx"
+private const val W_DECODER = "small.en-decoder.int8.onnx"
+private const val W_TOKENS = "small.en-tokens.txt"
+private const val VAD_MODEL = "silero_vad.onnx"
+
 private const val SAMPLE_RATE = 16000
 
 /**
@@ -47,9 +62,16 @@ object SherpaTranscriber {
 
   private fun modelDir(context: Context): File = File(context.filesDir, MODEL_DIR)
 
+  private fun whisperDir(context: Context): File = File(context.filesDir, WHISPER_DIR)
+
   fun isModelDownloaded(context: Context): Boolean {
     val dir = modelDir(context)
     return listOf(ENCODER, DECODER, JOINER, TOKENS).all { File(dir, it).exists() }
+  }
+
+  fun isWhisperDownloaded(context: Context): Boolean {
+    val dir = whisperDir(context)
+    return listOf(W_ENCODER, W_DECODER, W_TOKENS, VAD_MODEL).all { File(dir, it).exists() }
   }
 
   suspend fun downloadModel(
@@ -57,15 +79,37 @@ object SherpaTranscriber {
     orchestratorUrl: String,
     onProgress: (message: String, fraction: Float?) -> Unit,
   ): Result<Unit> =
+    downloadZip(context, orchestratorUrl, ZIP_NAME, modelDir(context), "Zipformer", onProgress) {
+      isModelDownloaded(context)
+    }
+
+  suspend fun downloadWhisper(
+    context: Context,
+    orchestratorUrl: String,
+    onProgress: (message: String, fraction: Float?) -> Unit,
+  ): Result<Unit> =
+    downloadZip(context, orchestratorUrl, WHISPER_ZIP, whisperDir(context), "Whisper", onProgress) {
+      isWhisperDownloaded(context)
+    }
+
+  private suspend fun downloadZip(
+    context: Context,
+    orchestratorUrl: String,
+    zipName: String,
+    targetDir: File,
+    label: String,
+    onProgress: (message: String, fraction: Float?) -> Unit,
+    isComplete: () -> Boolean,
+  ): Result<Unit> =
     withContext(Dispatchers.IO) {
-      if (isModelDownloaded(context)) {
-        onProgress("Zipformer model ready", 1f)
+      if (isComplete()) {
+        onProgress("$label model ready", 1f)
         return@withContext Result.success(Unit)
       }
-      val zipFile = File(context.cacheDir, ZIP_NAME)
+      val zipFile = File(context.cacheDir, zipName)
       try {
         val base = orchestratorUrl.trim().removeSuffix("/")
-        val url = URL("$base/models/$ZIP_NAME")
+        val url = URL("$base/models/$zipName")
         val connection = url.openConnection() as HttpURLConnection
         connection.connectTimeout = 15_000
         connection.readTimeout = 120_000
@@ -89,7 +133,7 @@ object SherpaTranscriber {
                   val fraction =
                     if (total > 0) (downloaded.toFloat() / total).coerceIn(0f, 0.99f) else null
                   onProgress(
-                    "Downloading Zipformer STT… ${downloaded / (1024 * 1024)} MB" +
+                    "Downloading $label STT… ${downloaded / (1024 * 1024)} MB" +
                       if (total > 0) " / ${total / (1024 * 1024)} MB" else "",
                     fraction,
                   )
@@ -105,29 +149,28 @@ object SherpaTranscriber {
         }
 
         onProgress("Extracting model…", null)
-        val dir = modelDir(context)
-        dir.deleteRecursively()
-        dir.mkdirs()
+        targetDir.deleteRecursively()
+        targetDir.mkdirs()
         ZipInputStream(zipFile.inputStream()).use { zis ->
           var entry = zis.nextEntry
           while (entry != null) {
             if (!entry.isDirectory) {
               // Flatten: the zip contains bare files.
-              val outFile = File(dir, File(entry.name).name)
+              val outFile = File(targetDir, File(entry.name).name)
               FileOutputStream(outFile).use { fos -> zis.copyTo(fos) }
             }
             zis.closeEntry()
             entry = zis.nextEntry
           }
         }
-        if (!isModelDownloaded(context)) {
+        if (!isComplete()) {
           throw IOException("Extracted model is incomplete")
         }
-        onProgress("Zipformer model ready", 1f)
+        onProgress("$label model ready", 1f)
         Result.success(Unit)
       } catch (e: Exception) {
-        Log.e(TAG, "Zipformer download failed", e)
-        modelDir(context).deleteRecursively()
+        Log.e(TAG, "$label download failed", e)
+        targetDir.deleteRecursively()
         Result.failure(e)
       } finally {
         zipFile.delete()
@@ -165,6 +208,55 @@ object SherpaTranscriber {
       )
     return OnlineRecognizer(config = config)
   }
+
+  /**
+   * Whisper small.en via sherpa-onnx's offline recognizer. Not streaming —
+   * used per VAD-detected speech segment.
+   */
+  fun createWhisperRecognizer(context: Context): OfflineRecognizer {
+    val dir = whisperDir(context)
+    val config =
+      OfflineRecognizerConfig(
+        featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+        modelConfig =
+          OfflineModelConfig(
+            whisper =
+              OfflineWhisperModelConfig(
+                encoder = File(dir, W_ENCODER).absolutePath,
+                decoder = File(dir, W_DECODER).absolutePath,
+                language = "en",
+                task = "transcribe",
+              ),
+            tokens = File(dir, W_TOKENS).absolutePath,
+            numThreads = 4,
+            modelType = "whisper",
+          ),
+      )
+    return OfflineRecognizer(config = config)
+  }
+
+  /** Silero VAD for segmenting speech ahead of the non-streaming Whisper decoder. */
+  fun createVad(context: Context): Vad {
+    val config =
+      VadModelConfig(
+        sileroVadModelConfig =
+          SileroVadModelConfig(
+            model = File(whisperDir(context), VAD_MODEL).absolutePath,
+            threshold = 0.5f,
+            minSilenceDuration = 0.8f,
+            minSpeechDuration = 0.25f,
+            windowSize = 512,
+            maxSpeechDuration = 20f,
+          ),
+        sampleRate = SAMPLE_RATE,
+        numThreads = 1,
+        provider = "cpu",
+      )
+    return Vad(config = config)
+  }
+
+  /** VAD window size in samples — feed exactly this many at a time. */
+  const val VAD_WINDOW = 512
 
   /** Convert PCM16LE bytes to normalized float samples for sherpa-onnx. */
   fun pcmToFloats(buffer: ByteArray, len: Int): FloatArray {

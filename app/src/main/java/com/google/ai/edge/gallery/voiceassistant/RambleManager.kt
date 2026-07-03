@@ -99,6 +99,79 @@ private class ZipformerEngine(context: android.content.Context) : SttEngine {
   }
 }
 
+/**
+ * Whisper small.en with Silero VAD segmentation. Whisper is not streaming, so
+ * each VAD-finalized speech segment is decoded asynchronously on a dedicated
+ * thread — decoding a 10s segment takes seconds on the phone, and blocking the
+ * AudioRecord loop that long would drop mic audio.
+ */
+private class WhisperEngine(context: android.content.Context) : SttEngine {
+  private val recognizer = SherpaTranscriber.createWhisperRecognizer(context)
+  private val vad = SherpaTranscriber.createVad(context)
+  private val decodeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+  private val results = java.util.concurrent.ConcurrentLinkedQueue<String>()
+  private val pendingDecodes = java.util.concurrent.atomic.AtomicInteger(0)
+  private var vadBuffer = FloatArray(0)
+
+  override fun accept(buffer: ByteArray, len: Int): String? {
+    // Silero VAD wants fixed 512-sample windows; buffer the remainder.
+    val incoming = SherpaTranscriber.pcmToFloats(buffer, len)
+    var all = FloatArray(vadBuffer.size + incoming.size)
+    vadBuffer.copyInto(all)
+    incoming.copyInto(all, vadBuffer.size)
+    var offset = 0
+    while (all.size - offset >= SherpaTranscriber.VAD_WINDOW) {
+      vad.acceptWaveform(all.copyOfRange(offset, offset + SherpaTranscriber.VAD_WINDOW))
+      offset += SherpaTranscriber.VAD_WINDOW
+    }
+    vadBuffer = all.copyOfRange(offset, all.size)
+    drainVadSegments()
+    return results.poll()
+  }
+
+  override fun finish(): String {
+    vad.flush()
+    drainVadSegments()
+    decodeExecutor.shutdown()
+    decodeExecutor.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS)
+    val remaining = mutableListOf<String>()
+    while (true) {
+      val r = results.poll() ?: break
+      remaining.add(r)
+    }
+    return remaining.joinToString(" ").trim()
+  }
+
+  private fun drainVadSegments() {
+    while (!vad.empty()) {
+      val samples = vad.front().samples
+      vad.pop()
+      if (samples.size < SAMPLE_RATE / 4) continue // skip blips under 250ms
+      pendingDecodes.incrementAndGet()
+      decodeExecutor.submit {
+        try {
+          val stream = recognizer.createStream()
+          stream.acceptWaveform(samples, SAMPLE_RATE)
+          recognizer.decode(stream)
+          val text = recognizer.getResult(stream).text.trim()
+          stream.release()
+          if (text.isNotBlank()) results.add(text)
+        } catch (e: Exception) {
+          android.util.Log.w("WhisperEngine", "Segment decode failed", e)
+        } finally {
+          pendingDecodes.decrementAndGet()
+        }
+      }
+    }
+  }
+
+  override fun close() {
+    decodeExecutor.shutdownNow()
+    vad.release()
+    recognizer.release()
+  }
+}
+
 // On-device live-note prompts: short observations on the newest fragment while
 // the user is still talking. "PASS" means nothing noteworthy in this fragment.
 private val LIVE_PROMPTS =
@@ -307,11 +380,20 @@ object RambleManager {
     orchestratorUrl: String,
     session: RambleSession,
   ) {
-    val useZipformer = SherpaTranscriber.isModelDownloaded(context)
-    updateState(session) { it.copy(sttEngine = if (useZipformer) "Zipformer" else "Vosk") }
+    // Engine priority: Whisper (best vocabulary) > Zipformer (streaming) > Vosk.
+    val engineName =
+      when {
+        SherpaTranscriber.isWhisperDownloaded(context) -> "Whisper"
+        SherpaTranscriber.isModelDownloaded(context) -> "Zipformer"
+        else -> "Vosk"
+      }
+    updateState(session) { it.copy(sttEngine = engineName) }
     val engine: SttEngine =
-      if (useZipformer) ZipformerEngine(context)
-      else VoskEngine(VoskTranscriber.getModelDir(context).absolutePath)
+      when (engineName) {
+        "Whisper" -> WhisperEngine(context)
+        "Zipformer" -> ZipformerEngine(context)
+        else -> VoskEngine(VoskTranscriber.getModelDir(context).absolutePath)
+      }
     val minBuffer =
       AudioRecord.getMinBufferSize(
         SAMPLE_RATE,
