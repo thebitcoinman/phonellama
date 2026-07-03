@@ -29,6 +29,25 @@ curl -X POST http://192.168.1.100:8081/v1/route \
 Set the orchestrator URL in the PhoneLlama app to `http://192.168.1.100:8081`
 (or `http://100.69.62.49:8081` when on Tailscale).
 
+## Ramble mode (`/v1/ramble`)
+
+Long-form think-aloud analysis. The phone streams transcript segments as you
+talk (offline Vosk, no time limit), then requests analysis of the full
+transcript against a mode prompt:
+
+- `challenge` — find holes, fallacies, unstated assumptions, counterarguments
+- `solve` — restate the problem and propose ranked solutions
+- `summarize` — thesis, key points, open questions
+
+```bash
+curl -X POST :8081/v1/ramble -d '{"session_id":"abc12345","mode":"challenge","chunk":"first segment..."}'
+curl -X POST :8081/v1/ramble -d '{"session_id":"abc12345","chunk":"more..."}'
+curl -X POST :8081/v1/ramble -d '{"session_id":"abc12345","mode":"challenge","final":true}'
+```
+
+Sessions are in-memory; transcripts over `RAMBLE_MAX_WORDS` (default 6000)
+are truncated to the most recent words.
+
 ## OpenClaw wake-word routing
 
 Prompts starting with a wake word (`use claw`, `ask claw`, `hey claw` — override

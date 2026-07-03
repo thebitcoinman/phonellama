@@ -47,6 +47,94 @@ class RouteRequest(BaseModel):
     stream: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Ramble mode: the phone streams transcript chunks of a long think-aloud
+# session (10-20 min); on `final` the whole transcript is analyzed against a
+# mode-specific system prompt.
+
+RAMBLE_MODES = {
+    "challenge": (
+        "You are a rigorous critical thinker. The user thought out loud; the "
+        "transcript is imperfect speech-to-text. Find the holes: logical "
+        "fallacies, unstated assumptions, contradictions, missing evidence, "
+        "and the strongest counterargument. Be direct and specific — quote "
+        "the claim you are attacking. End with the single weakest point."
+    ),
+    "solve": (
+        "You are a pragmatic problem-solver. The user described a problem out "
+        "loud; the transcript is imperfect speech-to-text. Restate the core "
+        "problem in two sentences, then propose concrete solutions ranked by "
+        "effort-to-impact, with a clear recommended first step."
+    ),
+    "summarize": (
+        "Distill this spoken monologue into its essential structure: the main "
+        "thesis, the key points in order, and any open questions the speaker "
+        "left unresolved. Imperfect speech-to-text — infer intent."
+    ),
+}
+
+RAMBLE_MAX_WORDS = int(os.environ.get("RAMBLE_MAX_WORDS", "6000"))
+_ramble_sessions: dict[str, dict] = {}
+
+
+class RambleRequest(BaseModel):
+    session_id: str = Field(..., min_length=8)
+    mode: str = "challenge"
+    chunk: str = ""
+    final: bool = False
+
+
+@app.post("/v1/ramble")
+async def ramble(req: RambleRequest):
+    session = _ramble_sessions.setdefault(req.session_id, {"chunks": []})
+    if req.chunk.strip():
+        session["chunks"].append(req.chunk.strip())
+
+    words = sum(len(c.split()) for c in session["chunks"])
+    if not req.final:
+        return {"ok": True, "segments": len(session["chunks"]), "words": words}
+
+    transcript = " ".join(_ramble_sessions.pop(req.session_id)["chunks"]).strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Empty ramble transcript")
+
+    tokens = transcript.split()
+    truncated = len(tokens) > RAMBLE_MAX_WORDS
+    if truncated:
+        transcript = " ".join(tokens[-RAMBLE_MAX_WORDS:])
+
+    system = RAMBLE_MODES.get(req.mode, RAMBLE_MODES["challenge"])
+    if not OLLAMA_THINK:
+        system = f"/no_think {system}"
+
+    ollama_base, model = pick_target(transcript)
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": transcript},
+        ],
+        "stream": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=570.0) as client:
+            resp = await client.post(f"{ollama_base}/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Ramble analysis failed: {exc}") from exc
+
+    content = _strip_thinking(_extract_content(data))
+    if truncated:
+        content = f"(Transcript truncated to last {RAMBLE_MAX_WORDS} words.)\n\n{content}"
+    return {
+        "target": f"{ollama_base} ({model}, mode={req.mode})",
+        "words": words,
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "response": content,
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "phonellama-orchestrator"}

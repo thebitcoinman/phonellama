@@ -262,6 +262,7 @@ PhoneLlama can route voice commands through three tiers:
 | Complex (code gen, long reasoning) | Proxmox orchestrator | Ollama on NixOS VM (qwen3:30b-a3b, CPU) |
 | News, stocks, live scores | Proxmox orchestrator | Ollama + tools (extend orchestrator) |
 | "use claw …" / "ask claw …" | OpenClaw agent on NixOS VM | Web search, browser, skills (slower) |
+| Ramble mode (10-20 min think-aloud) | Vosk on-phone + Proxmox analysis | Challenge / Solve / Summarize |
 
 ### Setup
 

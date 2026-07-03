@@ -26,8 +26,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -433,8 +435,103 @@ fun VoiceAssistantScreen(
       }
     }
 
+    RambleSection(
+      enabled = settings.enabled && micPermissionGranted && voskReady,
+      orchestratorUrl = settings.orchestratorUrl,
+    )
+
     Spacer(Modifier.height(32.dp))
   }
+}
+
+@Composable
+private fun RambleSection(enabled: Boolean, orchestratorUrl: String) {
+  val context = LocalContext.current
+  val rambleState by RambleManager.state.collectAsState()
+
+  Text("Ramble mode", fontWeight = FontWeight.Medium)
+  Text(
+    "Think out loud for as long as you like (offline transcription, no time limit). " +
+      "When you stop, the transcript is analyzed on the Proxmox box.",
+    style = MaterialTheme.typography.bodySmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+  )
+
+  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    RambleModeChip("Challenge me", "challenge", rambleState)
+    RambleModeChip("Solve it", "solve", rambleState)
+    RambleModeChip("Summarize", "summarize", rambleState)
+  }
+
+  Button(
+    onClick = {
+      if (rambleState.recording) RambleManager.stop()
+      else RambleManager.start(context, orchestratorUrl)
+    },
+    enabled = enabled && !rambleState.processing,
+    modifier = Modifier.fillMaxWidth().height(56.dp),
+    colors =
+      ButtonDefaults.buttonColors(
+        containerColor =
+          if (rambleState.recording) MaterialTheme.colorScheme.error
+          else MaterialTheme.colorScheme.primary
+      ),
+  ) {
+    Text(
+      when {
+        rambleState.recording -> "Stop & analyze"
+        rambleState.processing -> "Analyzing…"
+        else -> "Start rambling"
+      }
+    )
+  }
+
+  if (rambleState.status.isNotEmpty()) {
+    Text(
+      rambleState.status,
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+  }
+
+  if (rambleState.transcript.isNotEmpty() && (rambleState.recording || rambleState.processing)) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(12.dp)) {
+        Text(
+          "Heard so far (${rambleState.transcript.split(" ").size} words):",
+          style = MaterialTheme.typography.bodySmall,
+          fontWeight = FontWeight.Medium,
+        )
+        Text(
+          rambleState.transcript.takeLast(400),
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+  }
+
+  if (rambleState.result.isNotEmpty()) {
+    Card(
+      modifier = Modifier.fillMaxWidth(),
+      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Analysis (${rambleState.mode})", fontWeight = FontWeight.Medium)
+        Text(rambleState.result, style = MaterialTheme.typography.bodyMedium)
+      }
+    }
+  }
+}
+
+@Composable
+private fun RambleModeChip(label: String, mode: String, rambleState: RambleState) {
+  FilterChip(
+    selected = rambleState.mode == mode,
+    onClick = { RambleManager.setMode(mode) },
+    label = { Text(label) },
+    enabled = !rambleState.recording && !rambleState.processing,
+  )
 }
 
 @Composable
